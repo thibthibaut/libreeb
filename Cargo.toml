@@ -1,0 +1,28 @@
+cargo-features = ["profile-rustflags"]
+[package]
+name = "openevt"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+aligned-vec = "0.6.1"
+arrayvec = "0.7.6"
+byteorder = "1.5.0"
+itertools = "0.13.0"
+stackvector = "1.1.1"
+# indoc = "2.0.5"
+# rayon = "1.10.0"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+rustflags = ["-C", "target-cpu=native"]
+panic = "abort"
+debug = true
+
+[lib]
+name = "openevt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "evt"
+path = "src/main.rs"
