@@ -1,10 +1,7 @@
 #![feature(test)]
-use std::fs::File;
-use std::io::{BufReader, Read};
 use std::{env, path::Path};
 
-use itertools::Itertools;
-use openevt::{EventCD, RawFileReader};
+use openevt::RawFileReader;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

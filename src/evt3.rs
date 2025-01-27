@@ -1,12 +1,8 @@
-use std::simd::{f32x4, u16x32, u16x4, u16x64, u16x8, u8x64, Simd};
 
 use crate::{define_raw_evt, EventCD, EventDecoder};
 // use arrayvec::ArrayVec;
-use aligned_vec::{avec, AVec};
-use byteorder::{LittleEndian, ReadBytesExt};
 use stackvector::StackVec;
 use std::io::Read;
-use std::mem;
 
 // Define EVT3 events, the layout is:
 //
