@@ -11,7 +11,7 @@ pub use evt3::*; // Re-export evt3 public
 pub mod evt3;
 mod macros;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct EventCD {
     pub x: u16,
     pub y: u16,
@@ -26,6 +26,7 @@ pub trait EventDecoder {
 pub struct RawFileReader {
     reader: BufReader<File>,
     decoder: Evt3Decoder,
+    header_read: bool,
 }
 
 impl RawFileReader {
@@ -33,22 +34,29 @@ impl RawFileReader {
         let file = File::open(path).expect("Cannot read file");
         let reader = BufReader::with_capacity(32 * 1024, file);
         let decoder = Evt3Decoder::default();
-        RawFileReader { reader, decoder }
+        RawFileReader {
+            reader,
+            decoder,
+            header_read: false,
+        }
     }
 
     pub fn read_events(&mut self) -> impl Iterator<Item = EventCD> + use<'_> {
-        loop {
-            // Look at the next char without consuming it
-            let buffer = self.reader.fill_buf().unwrap();
-            let next_char = buffer[0];
-            if next_char != b'%' {
-                // Read end of header section
-                break;
+        if !self.header_read {
+            loop {
+                // Look at the next char without consuming it
+                let buffer = self.reader.fill_buf().unwrap();
+                let next_char = buffer[0];
+                if next_char != b'%' {
+                    // Read end of header section
+                    break;
+                }
+                // Read line
+                let mut header_line = String::new();
+                self.reader.read_line(&mut header_line).unwrap();
+                // println!("Header Entry {}", header_line[1..].trim());
             }
-            // Read line
-            let mut header_line = String::new();
-            self.reader.read_line(&mut header_line).unwrap();
-            println!("Header Entry {}", header_line[1..].trim());
+            self.header_read = true;
         }
         self.decoder.decode(&mut self.reader)
     }

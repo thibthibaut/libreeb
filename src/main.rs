@@ -1,8 +1,400 @@
+//! # [Ratatui] Canvas example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui/ratatui
+//! [examples]: https://github.com/ratatui/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui/ratatui/blob/main/examples/README.md
+
+use std::{
+    io::stdout,
+    path::Path,
+    time::{Duration, Instant},
+};
+
+use color_eyre::{owo_colors::OwoColorize, Result};
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture, KeyEventKind},
+    ExecutableCommand,
+};
+use itertools::Itertools;
+use openevt::{EventCD, RawFileReader};
+use ratatui::{
+    crossterm::event::{self, Event, KeyCode, MouseEventKind},
+    layout::{Alignment, Constraint, Layout, Position, Rect},
+    style::{Color, Stylize},
+    symbols::Marker,
+    widgets::{
+        canvas::{Canvas, Circle, Map, MapResolution, Points, Rectangle},
+        Block, Paragraph, Widget, Wrap,
+    },
+    DefaultTerminal, Frame,
+};
+
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    stdout().execute(EnableMouseCapture)?;
+    let terminal = ratatui::init();
+    let reader = RawFileReader::new(Path::new("/home/tvercueil/Desktop/laser.raw"));
+    let app_result = App::new(reader).run(terminal);
+    ratatui::restore();
+    stdout().execute(DisableMouseCapture)?;
+    app_result
+}
+
+struct App {
+    exit: bool,
+    x: f64,
+    y: f64,
+    ball: Circle,
+    playground: Rect,
+    vx: f64,
+    vy: f64,
+    tick_count: u64,
+    marker: Marker,
+    positive_points: Vec<Position>,
+    negative_points: Vec<Position>,
+    is_drawing: bool,
+    file_reader: RawFileReader,
+    current_timetamp: u64, // event_iterator: Box<dyn Iterator<Item = EventCD> + 'a>,
+    fps: f64,
+}
+
+impl App {
+    fn new(file_reader: RawFileReader) -> Self {
+        // let iterator = file_reader.read_events();
+
+        Self {
+            exit: false,
+            x: 0.0,
+            y: 0.0,
+            ball: Circle {
+                x: 20.0,
+                y: 40.0,
+                radius: 10.0,
+                color: Color::Yellow,
+            },
+            playground: Rect::new(10, 10, 200, 100),
+            vx: 1.0,
+            vy: 1.0,
+            tick_count: 0,
+            marker: Marker::Braille,
+            positive_points: vec![],
+            negative_points: vec![],
+            is_drawing: false,
+            file_reader,
+            current_timetamp: 0,
+            fps: 0.0,
+        }
+    }
+
+    pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        let tick_rate = Duration::from_millis(16);
+        // let tick_rate = Duration::from_secs(16);
+        let mut last_tick = Instant::now();
+        while !self.exit {
+            terminal.draw(|frame| self.draw(frame))?;
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if event::poll(timeout)? {
+                match event::read()? {
+                    Event::Key(key) => self.handle_key_press(key),
+                    Event::Mouse(event) => self.handle_mouse_event(event),
+                    _ => (),
+                }
+            }
+
+            if last_tick.elapsed() >= tick_rate {
+                self.fps = 1000.0 / last_tick.elapsed().as_millis() as f64;
+                self.on_tick();
+                last_tick = Instant::now();
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_key_press(&mut self, key: event::KeyEvent) {
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') => self.exit = true,
+            KeyCode::Down | KeyCode::Char('j') => self.y += 1.0,
+            KeyCode::Up | KeyCode::Char('k') => self.y -= 1.0,
+            KeyCode::Right | KeyCode::Char('l') => self.x += 1.0,
+            KeyCode::Left | KeyCode::Char('h') => self.x -= 1.0,
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_event(&mut self, event: event::MouseEvent) {
+        match event.kind {
+            MouseEventKind::Down(_) => self.is_drawing = true,
+            MouseEventKind::Up(_) => self.is_drawing = false,
+            // MouseEventKind::Drag(_) => {
+            //     self.points.push(Position::new(event.column, event.row));
+            // }
+            _ => {}
+        }
+    }
+
+    fn on_tick(&mut self) {
+        let data = self.file_reader.read_events().take(4096 * 2).collect_vec();
+        self.current_timetamp = data.first().unwrap().t;
+
+        self.positive_points = data
+            .iter()
+            .filter(|evt| evt.p == 1)
+            .map(|evt| Position { x: evt.x, y: evt.y })
+            .collect_vec();
+
+        self.negative_points = data
+            .iter()
+            .filter(|evt| evt.p == 0)
+            .map(|evt| Position { x: evt.x, y: evt.y })
+            .collect_vec();
+
+        self.tick_count += 1;
+        // only change marker every 180 ticks (3s) to avoid stroboscopic effect
+        // if (self.tick_count % 180) == 0 {
+        //     self.marker = match self.marker {
+        //         Marker::Dot => Marker::Braille,
+        //         Marker::Braille => Marker::Block,
+        //         Marker::Block => Marker::HalfBlock,
+        //         Marker::HalfBlock => Marker::Bar,
+        //         Marker::Bar => Marker::Dot,
+        //     };
+        // }
+        // bounce the ball by flipping the velocity vector
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        let horizontal =
+            Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)]);
+        let vertical = Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)]);
+        let [left, right] = horizontal.areas(frame.area());
+        let [draw, map] = vertical.areas(left);
+        let [pong, boxes] = vertical.areas(right);
+
+        // frame.render_widget(self.map_canvas(), map);
+        frame.render_widget(self.draw_canvas(draw), draw);
+        frame.render_widget(self.pong_canvas(), pong);
+        // frame.render_widget(self.boxes_canvas(boxes), boxes);
+    }
+
+    fn map_canvas(&self) -> impl Widget + '_ {
+        Canvas::default()
+            .block(Block::bordered().title("Event Data"))
+            .paint(|ctx| {
+                ctx.draw(&Map {
+                    color: Color::Green,
+                    resolution: MapResolution::High,
+                });
+                // ctx.print(self.x, -self.y, "You are here".yellow());
+            })
+            .x_bounds([0.0, 1.0])
+            .y_bounds([0.0, 1.0])
+    }
+
+    fn draw_canvas(&self, area: Rect) -> impl Widget + '_ {
+        Canvas::default()
+            .block(Block::bordered().title("Event Slices"))
+            .marker(self.marker)
+            .x_bounds([0.0, 1.0 /*f64::from(area.width)*/])
+            .y_bounds([0.0, 1.0 /*f64::from(area.height)*/])
+            .paint(move |ctx| {
+                let ppoints = self
+                    .positive_points
+                    .iter()
+                    .map(|p| (p.x as f64 / 1280.0, 1.0 - (p.y as f64 / 720.0)))
+                    .collect_vec();
+
+                let npoints = self
+                    .negative_points
+                    .iter()
+                    .map(|p| (p.x as f64 / 1280.0, 1.0 - (p.y as f64 / 720.0)))
+                    .collect_vec();
+
+                ctx.draw(&Points {
+                    coords: &ppoints,
+                    color: Color::Blue,
+                });
+                ctx.draw(&Points {
+                    coords: &npoints,
+                    color: Color::Magenta,
+                });
+            })
+    }
+
+    fn pong_canvas(&self) -> impl Widget + '_ {
+        Paragraph::new(format!(
+            "Timestamp: {}\n FPS {}",
+            self.current_timetamp, self.fps
+        ))
+        .block(Block::bordered().title("Info"))
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true })
+    }
+
+    fn boxes_canvas(&self, area: Rect) -> impl Widget {
+        let left = 0.0;
+        let right = f64::from(area.width);
+        let bottom = 0.0;
+        let top = f64::from(area.height).mul_add(2.0, -4.0);
+        Canvas::default()
+            .block(Block::bordered().title("Rects"))
+            .marker(self.marker)
+            .x_bounds([left, right])
+            .y_bounds([bottom, top])
+            .paint(|ctx| {
+                for i in 0..=11 {
+                    ctx.draw(&Rectangle {
+                        x: f64::from(i * i + 3 * i) / 2.0 + 2.0,
+                        y: 2.0,
+                        width: f64::from(i),
+                        height: f64::from(i),
+                        color: Color::Red,
+                    });
+                    ctx.draw(&Rectangle {
+                        x: f64::from(i * i + 3 * i) / 2.0 + 2.0,
+                        y: 21.0,
+                        width: f64::from(i),
+                        height: f64::from(i),
+                        color: Color::Blue,
+                    });
+                }
+                for i in 0..100 {
+                    if i % 10 != 0 {
+                        ctx.print(f64::from(i) + 1.0, 0.0, format!("{i}", i = i % 10));
+                    }
+                    if i % 2 == 0 && i % 10 != 0 {
+                        ctx.print(0.0, f64::from(i), format!("{i}", i = i % 10));
+                    }
+                }
+            })
+    }
+}
+
+/*
 #![feature(test)]
-use std::{env, path::Path};
 
+use color_eyre::Result;
+use itertools::Itertools;
 use openevt::RawFileReader;
+use std::{env, io, path::Path};
 
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::Color,
+    style::Stylize,
+    symbols::border,
+    text::Text,
+    widgets::{
+        canvas::{Canvas, Line, Map, MapResolution, Rectangle},
+        Block, Paragraph, Widget,
+    },
+    DefaultTerminal, Frame,
+};
+
+#[derive(Debug, Default)]
+pub struct App {
+    counter: u8,
+    exit: bool,
+}
+
+fn main() -> io::Result<()> {
+    let mut terminal = ratatui::init();
+    let app_result = App::default().run(&mut terminal);
+    app_result
+}
+
+impl App {
+    /// runs the application's main loop until the user quits
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.draw(frame))?;
+            self.handle_events()?;
+        }
+        Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
+
+    fn handle_events(&mut self) -> io::Result<()> {
+        match event::read()? {
+            // it's important to check that the event is a key press event as
+            // crossterm also emits key release and repeat events on Windows.
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                self.handle_key_event(key_event)
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Char('q') => self.exit(),
+            KeyCode::Left => self.decrement_counter(),
+            KeyCode::Right => self.increment_counter(),
+            _ => {}
+        }
+    }
+
+    fn exit(&mut self) {
+        self.exit = true;
+    }
+
+    fn increment_counter(&mut self) {
+        self.counter += 1;
+    }
+
+    fn decrement_counter(&mut self) {
+        self.counter -= 1;
+    }
+}
+
+impl Widget for &App {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        Canvas::default()
+            .block(Block::bordered().title("Canvas"))
+            .x_bounds([-180.0, 180.0])
+            .y_bounds([-90.0, 90.0])
+            .paint(|ctx| {
+                ctx.draw(&Map {
+                    resolution: MapResolution::High,
+                    color: Color::White,
+                });
+                ctx.layer();
+                ctx.draw(&Line {
+                    x1: 0.0,
+                    y1: 10.0,
+                    x2: 10.0,
+                    y2: 10.0,
+                    color: Color::White,
+                });
+                ctx.draw(&Rectangle {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 10.0,
+                    height: 10.0,
+                    color: Color::Red,
+                });
+            });
+    }
+}
+
+/*
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -17,7 +409,7 @@ fn main() {
         println!("{:?}", evt);
     }
 }
-
+*/
 extern crate test;
 #[cfg(test)]
 mod tests {
@@ -60,3 +452,4 @@ mod tests {
         })
     }
 }
+*/

@@ -1,4 +1,3 @@
-
 use crate::{define_raw_evt, EventCD, EventDecoder};
 // use arrayvec::ArrayVec;
 use stackvector::StackVec;
@@ -103,13 +102,9 @@ impl EventDecoder for Evt3Decoder {
                     let raw_event: Evt3 = buffer.as_slice().into();
 
                     match raw_event {
-                        Evt3::EvtAddrY { y, _origin } => {
-                            println!("ADRY");
-                            self.y = y
-                        } // Update State
+                        Evt3::EvtAddrY { y, _origin } => self.y = y, // Update State
                         Evt3::EvtAddrX { x, pol } => {
                             // Create Event
-                            println!("*DRX");
                             events.push(EventCD {
                                 x,
                                 y: self.y,
@@ -118,28 +113,23 @@ impl EventDecoder for Evt3Decoder {
                             });
                         }
                         Evt3::VectBaseX { x, pol } => {
-                            println!("VECB");
                             // Update State
                             self.polarity = pol;
                             self.x = x;
                         }
                         Evt3::Vect12 { valid } => {
-                            println!("*V12");
                             // Create Event
                             handle_vect!(self, events, valid, 12);
                         }
                         Evt3::Vect8 { valid } => {
-                            println!("*V08");
                             // Create Event
                             handle_vect!(self, events, valid, 8);
                         }
                         Evt3::EvtTimeLow { time } => {
-                            println!("TIML");
                             let event_time = time as u64;
                             self.time = self.time_base.unwrap_or(0) + event_time;
                         }
                         Evt3::EvtTimeHigh { time } => {
-                            println!("TIMH");
                             if self.time_base.is_none() {
                                 self.time_base = Some((time as u64) << 12);
                             }
