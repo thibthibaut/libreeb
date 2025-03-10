@@ -13,12 +13,6 @@
 //! [examples]: https://github.com/ratatui/ratatui/blob/main/examples
 //! [examples readme]: https://github.com/ratatui/ratatui/blob/main/examples/README.md
 
-use std::{
-    io::stdout,
-    path::Path,
-    time::{Duration, Instant},
-};
-
 use color_eyre::{owo_colors::OwoColorize, Result};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture, KeyEventKind},
@@ -37,12 +31,27 @@ use ratatui::{
     },
     DefaultTerminal, Frame,
 };
+use std::{
+    io::stdout,
+    path::Path,
+    // time::{Duration, Instant},
+};
+use time::{Duration, OffsetDateTime};
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    let mut pargs = pico_args::Arguments::from_env();
+
+    if pargs.contains(["-h", "--help"]) {
+        println!("You asked for help, good luck");
+        std::process::exit(0);
+    }
+
+    let path: String = pargs.value_from_str("--input")?;
+
     stdout().execute(EnableMouseCapture)?;
     let terminal = ratatui::init();
-    let reader = RawFileReader::new(Path::new("/home/tvercueil/Desktop/laser.raw"));
+    let reader = RawFileReader::new(Path::new(&path));
     let app_result = App::new(reader).run(terminal);
     ratatui::restore();
     stdout().execute(DisableMouseCapture)?;
@@ -53,17 +62,14 @@ struct App {
     exit: bool,
     x: f64,
     y: f64,
-    ball: Circle,
-    playground: Rect,
-    vx: f64,
-    vy: f64,
     tick_count: u64,
     marker: Marker,
     positive_points: Vec<Position>,
     negative_points: Vec<Position>,
     is_drawing: bool,
     file_reader: RawFileReader,
-    current_timetamp: u64, // event_iterator: Box<dyn Iterator<Item = EventCD> + 'a>,
+    current_timetamp: u64,
+    slice_duration: u64,
     fps: f64,
 }
 
@@ -75,15 +81,6 @@ impl App {
             exit: false,
             x: 0.0,
             y: 0.0,
-            ball: Circle {
-                x: 20.0,
-                y: 40.0,
-                radius: 10.0,
-                color: Color::Yellow,
-            },
-            playground: Rect::new(10, 10, 200, 100),
-            vx: 1.0,
-            vy: 1.0,
             tick_count: 0,
             marker: Marker::Braille,
             positive_points: vec![],
@@ -91,14 +88,15 @@ impl App {
             is_drawing: false,
             file_reader,
             current_timetamp: 0,
+            slice_duration: 1_000,
             fps: 0.0,
         }
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        let tick_rate = Duration::from_millis(16);
+        let tick_rate = std::time::Duration::from_millis(16);
         // let tick_rate = Duration::from_secs(16);
-        let mut last_tick = Instant::now();
+        let mut last_tick = std::time::Instant::now();
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
@@ -113,7 +111,7 @@ impl App {
             if last_tick.elapsed() >= tick_rate {
                 self.fps = 1000.0 / last_tick.elapsed().as_millis() as f64;
                 self.on_tick();
-                last_tick = Instant::now();
+                last_tick = std::time::Instant::now();
             }
         }
         Ok(())
@@ -145,7 +143,12 @@ impl App {
     }
 
     fn on_tick(&mut self) {
-        let data = self.file_reader.read_events().take(4096 * 2).collect_vec();
+        let data = self.file_reader.read_events().take(4048 * 2).collect_vec();
+
+        if data.is_empty() {
+            return;
+        }
+
         self.current_timetamp = data.first().unwrap().t;
 
         self.positive_points = data
@@ -161,17 +164,6 @@ impl App {
             .collect_vec();
 
         self.tick_count += 1;
-        // only change marker every 180 ticks (3s) to avoid stroboscopic effect
-        // if (self.tick_count % 180) == 0 {
-        //     self.marker = match self.marker {
-        //         Marker::Dot => Marker::Braille,
-        //         Marker::Braille => Marker::Block,
-        //         Marker::Block => Marker::HalfBlock,
-        //         Marker::HalfBlock => Marker::Bar,
-        //         Marker::Bar => Marker::Dot,
-        //     };
-        // }
-        // bounce the ball by flipping the velocity vector
     }
 
     fn draw(&self, frame: &mut Frame) {
@@ -233,13 +225,24 @@ impl App {
     }
 
     fn pong_canvas(&self) -> impl Widget + '_ {
-        Paragraph::new(format!(
-            "Timestamp: {}\n FPS {}",
-            self.current_timetamp, self.fps
-        ))
-        .block(Block::bordered().title("Info"))
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: true })
+        let seconds = (self.current_timetamp / 1_000_000) as i64;
+        let micros = (self.current_timetamp % 1_000_000) as i32;
+        // Create timestamp from UNIX epoch
+        let time = OffsetDateTime::from_unix_timestamp(seconds).unwrap()
+            + Duration::microseconds(micros as i64);
+
+        let timestamp = format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            time.hour(),
+            time.minute(),
+            time.second(),
+            time.microsecond() / 1000
+        );
+
+        Paragraph::new(format!("Timestamp: {}\n FPS {}", timestamp, self.fps))
+            .block(Block::bordered().title("Info"))
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: true })
     }
 
     fn boxes_canvas(&self, area: Rect) -> impl Widget {

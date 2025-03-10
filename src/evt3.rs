@@ -149,7 +149,7 @@ impl EventDecoder for Evt3Decoder {
                             self.time = self.time_base.unwrap_or(0);
                         }
                         _ => {
-                            println!("Unknown event type");
+                            // TODO: Handle Unknown events
                         }
                     } // end match
 
