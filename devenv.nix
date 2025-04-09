@@ -51,7 +51,7 @@
      mdsh.enable = true;
      cargo-check.enable = true;
      end-of-file-fixer.enable = true;
-     clippy.enable = true;
+     clippy.enable = false;
      clippy.packageOverrides.cargo = pkgs.cargo;
      clippy.packageOverrides.clippy = pkgs.clippy;
   }; 

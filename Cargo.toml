@@ -1,11 +1,11 @@
 cargo-features = ["profile-rustflags"]
+
 [package]
-name = "openevt"
+name = "libreeb"
 version = "0.1.0"
 edition = "2021"
+
 [dependencies]
-# aligned-vec = "0.6.1"
-# arrayvec = "0.7.6"
 byteorder = "1.5.0"
 color-eyre = "0.6.3"
 crossterm = "0.28.1"
@@ -13,9 +13,8 @@ itertools = "0.13.0"
 pico-args = "0.5.0"
 ratatui = "0.29.0"
 stackvector = "1.1.1"
+thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting"] }
-# indoc = "2.0.5"
-# rayon = "1.10.0"
 
 [profile.release]
 codegen-units = 1
@@ -25,9 +24,9 @@ panic = "abort"
 debug = true
 
 [lib]
-name = "openevt"
+name = "libreeb"
 path = "src/lib.rs"
 
 [[bin]]
-name = "evt"
+name = "eb_viewer"
 path = "src/main.rs"

@@ -1,12 +1,13 @@
 #[macro_export]
 macro_rules! extract_bits {
-    ($value:expr, $type:ty, $start:expr, $len:expr) => {{
+    ($value:expr, $source_type:ty, $target_type:ty, $start:expr, $len:expr) => {{
         // Create a mask with 1s in the range we want to extract
-        let mask = ((1u16 << $len) - 1) << $start;
+        let one: $source_type = 1;
+        let mask: $source_type = ((one << $len) - 1) << $start;
         // Extract the bits and shift them right to start position
         let extracted = ($value & mask) >> $start;
         // Cast to the desired type
-        extracted as $type
+        extracted as $target_type
     }};
 }
 
@@ -14,7 +15,7 @@ macro_rules! extract_bits {
 macro_rules! define_raw_evt {
     // Pattern for the input
     (
-        #[storage($storage:ty), discriminant($discriminant_start:expr, $discriminant_len:expr)]
+        #[storage($storage:ty), size($size:literal), discriminant($discriminant_start:expr, $discriminant_len:expr)]
         enum $enum_name:ident {
             $(
                 $variant:ident ( $event_type:literal ) {
@@ -37,14 +38,14 @@ macro_rules! define_raw_evt {
         // Implement from for the event data type
         impl From<&[u8]> for $enum_name {
             fn from(bytes: &[u8]) -> Self {
-                let bytes: [u8; 2] = bytes.try_into().unwrap();
-                let value = u16::from_le_bytes(bytes);
-                let event_type = $crate::extract_bits!(value, u16, $discriminant_start, $discriminant_len);
+                let bytes: [u8; $size] = bytes.try_into().unwrap();
+                let value = <$storage>::from_le_bytes(bytes);
+                let event_type = $crate::extract_bits!(value, $storage, u16, $discriminant_start, $discriminant_len);
                 match event_type {
                     $(
                         $event_type => {
                             $(
-                                let $field = $crate::extract_bits!(value, $type, $field_start, $field_len);
+                                let $field = $crate::extract_bits!(value,$storage, $type, $field_start, $field_len);
                             )*
                             Self::$variant {
                                 $($field),*

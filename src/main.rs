@@ -1,25 +1,10 @@
-//! # [Ratatui] Canvas example
-//!
-//! The latest version of this example is available in the [examples] folder in the repository.
-//!
-//! Please note that the examples are designed to be run against the `main` branch of the Github
-//! repository. This means that you may not be able to compile with the latest release version on
-//! crates.io, or the one that you have installed locally.
-//!
-//! See the [examples readme] for more information on finding examples that match the version of the
-//! library you are using.
-//!
-//! [Ratatui]: https://github.com/ratatui/ratatui
-//! [examples]: https://github.com/ratatui/ratatui/blob/main/examples
-//! [examples readme]: https://github.com/ratatui/ratatui/blob/main/examples/README.md
-
 use color_eyre::{owo_colors::OwoColorize, Result};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture, KeyEventKind},
     ExecutableCommand,
 };
 use itertools::Itertools;
-use openevt::{EventCD, RawFileReader};
+use libreeb::{slice_events, EventCD, RawFileReader, SliceBy};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, MouseEventKind},
     layout::{Alignment, Constraint, Layout, Position, Rect},
@@ -31,11 +16,7 @@ use ratatui::{
     },
     DefaultTerminal, Frame,
 };
-use std::{
-    io::stdout,
-    path::Path,
-    // time::{Duration, Instant},
-};
+use std::{io::stdout, path::Path};
 use time::{Duration, OffsetDateTime};
 
 fn main() -> Result<()> {
@@ -49,13 +30,16 @@ fn main() -> Result<()> {
 
     let path: String = pargs.value_from_str("--input")?;
 
-    stdout().execute(EnableMouseCapture)?;
-    let terminal = ratatui::init();
-    let reader = RawFileReader::new(Path::new(&path));
-    let app_result = App::new(reader).run(terminal);
-    ratatui::restore();
-    stdout().execute(DisableMouseCapture)?;
-    app_result
+    // stdout().execute(EnableMouseCapture)?;
+    // let terminal = ratatui::init();
+    let mut reader = RawFileReader::new(Path::new(&path))?;
+    let mut it = reader.read_events();
+    println!("{:?}", it.next());
+    // let app_result = App::new(reader).run(terminal);
+    // ratatui::restore();
+    // stdout().execute(DisableMouseCapture)?;
+    // app_result
+    Ok(())
 }
 
 struct App {
@@ -71,12 +55,12 @@ struct App {
     current_timetamp: u64,
     slice_duration: u64,
     fps: f64,
+    pause: bool,
+    step: bool,
 }
 
 impl App {
     fn new(file_reader: RawFileReader) -> Self {
-        // let iterator = file_reader.read_events();
-
         Self {
             exit: false,
             x: 0.0,
@@ -90,11 +74,13 @@ impl App {
             current_timetamp: 0,
             slice_duration: 1_000,
             fps: 0.0,
+            pause: false,
+            step: false,
         }
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        let tick_rate = std::time::Duration::from_millis(16);
+        let tick_rate = std::time::Duration::from_millis(1000 / 30);
         // let tick_rate = Duration::from_secs(16);
         let mut last_tick = std::time::Instant::now();
         while !self.exit {
@@ -123,6 +109,8 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.exit = true,
+            KeyCode::Char('p') => self.pause = !self.pause,
+            KeyCode::Char('s') => self.step = true,
             KeyCode::Down | KeyCode::Char('j') => self.y += 1.0,
             KeyCode::Up | KeyCode::Char('k') => self.y -= 1.0,
             KeyCode::Right | KeyCode::Char('l') => self.x += 1.0,
@@ -143,41 +131,43 @@ impl App {
     }
 
     fn on_tick(&mut self) {
-        let data = self.file_reader.read_events().take(4048 * 2).collect_vec();
-
-        if data.is_empty() {
+        // Do do anything if we are in pause
+        if self.pause && !self.step {
             return;
         }
+        // let data = self.file_reader.read_events().take(4048 * 2).collect_vec();
+        let data = slice_events(self.file_reader.read_events(), SliceBy::Time(3_000)).next();
 
-        self.current_timetamp = data.first().unwrap().t;
+        if let Some(data) = data {
+            self.current_timetamp = data.first().unwrap().t;
 
-        self.positive_points = data
-            .iter()
-            .filter(|evt| evt.p == 1)
-            .map(|evt| Position { x: evt.x, y: evt.y })
-            .collect_vec();
+            self.positive_points = data
+                .iter()
+                .filter(|evt| evt.p == 1)
+                .map(|evt| Position { x: evt.x, y: evt.y })
+                .collect_vec();
 
-        self.negative_points = data
-            .iter()
-            .filter(|evt| evt.p == 0)
-            .map(|evt| Position { x: evt.x, y: evt.y })
-            .collect_vec();
-
+            self.negative_points = data
+                .iter()
+                .filter(|evt| evt.p == 0)
+                .map(|evt| Position { x: evt.x, y: evt.y })
+                .collect_vec();
+        } else {
+            self.file_reader.reset();
+        }
         self.tick_count += 1;
+        self.step = false;
     }
 
     fn draw(&self, frame: &mut Frame) {
-        let horizontal =
-            Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)]);
-        let vertical = Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)]);
+        let horizontal = Layout::horizontal([Constraint::Length(320), Constraint::Length(320)]);
+        let vertical = Layout::vertical([Constraint::Length(320), Constraint::Length(320)]);
         let [left, right] = horizontal.areas(frame.area());
         let [draw, map] = vertical.areas(left);
         let [pong, boxes] = vertical.areas(right);
 
-        // frame.render_widget(self.map_canvas(), map);
         frame.render_widget(self.draw_canvas(draw), draw);
         frame.render_widget(self.pong_canvas(), pong);
-        // frame.render_widget(self.boxes_canvas(boxes), boxes);
     }
 
     fn map_canvas(&self) -> impl Widget + '_ {
@@ -204,13 +194,13 @@ impl App {
                 let ppoints = self
                     .positive_points
                     .iter()
-                    .map(|p| (p.x as f64 / 1280.0, 1.0 - (p.y as f64 / 720.0)))
+                    .map(|p| (p.x as f64 / 320.0, 1.0 - (p.y as f64 / 320.0)))
                     .collect_vec();
 
                 let npoints = self
                     .negative_points
                     .iter()
-                    .map(|p| (p.x as f64 / 1280.0, 1.0 - (p.y as f64 / 720.0)))
+                    .map(|p| (p.x as f64 / 320.0, 1.0 - (p.y as f64 / 320.0)))
                     .collect_vec();
 
                 ctx.draw(&Points {
@@ -239,7 +229,7 @@ impl App {
             time.microsecond() / 1000
         );
 
-        Paragraph::new(format!("Timestamp: {}\n FPS {}", timestamp, self.fps))
+        Paragraph::new(format!("Timestamp: {}\n FPS {:.1}", timestamp, self.fps))
             .block(Block::bordered().title("Info"))
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
@@ -289,7 +279,7 @@ impl App {
 
 use color_eyre::Result;
 use itertools::Itertools;
-use openevt::RawFileReader;
+use libreeb::RawFileReader;
 use std::{env, io, path::Path};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -417,7 +407,7 @@ extern crate test;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openevt::EventCD;
+    use libreeb::EventCD;
     use test::Bencher;
 
     #[test]

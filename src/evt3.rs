@@ -1,5 +1,4 @@
 use crate::{define_raw_evt, EventCD, EventDecoder};
-// use arrayvec::ArrayVec;
 use stackvector::StackVec;
 use std::io::Read;
 
@@ -10,7 +9,7 @@ use std::io::Read;
 // | Event Type|           Payload        |
 // +-----------+--------------------------+
 define_raw_evt! {
-    #[storage(u16), discriminant(12, 4)]
+    #[storage(u16), size(2), discriminant(12, 4)]
     enum Evt3 {
         EvtAddrY (0x0) {
             #[0,11]
