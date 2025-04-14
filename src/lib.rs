@@ -1,5 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 
+use enum_dispatch::enum_dispatch;
 use std::{
     collections::HashMap,
     fs::File,
@@ -44,21 +45,10 @@ pub enum RawFileReaderError {
     Unknown,
 }
 
+#[enum_dispatch(EventDecoder)]
 enum Decoder {
     Evt21(Evt21Decoder),
     Evt3(Evt3Decoder),
-}
-
-impl EventDecoder for Decoder {
-    fn decode<'a>(
-        &'a mut self,
-        reader: &'a mut impl Read,
-    ) -> Box<dyn Iterator<Item = EventCD> + 'a> {
-        match self {
-            Decoder::Evt21(decoder) => decoder.decode(reader),
-            Decoder::Evt3(decoder) => decoder.decode(reader),
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Default)]
@@ -69,6 +59,7 @@ pub struct EventCD {
     pub t: u64,
 }
 
+#[enum_dispatch]
 pub trait EventDecoder {
     fn decode<'a>(
         &'a mut self,
@@ -109,7 +100,6 @@ pub struct RawFileHeader {
     pub camera_geometry: CameraGeometry,
 }
 
-// Implement the parse_header function
 fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReaderError> {
     let mut header_dict: HashMap<String, String> = HashMap::new();
     let mut event_type_string = None;
@@ -195,7 +185,6 @@ impl RawFileReader {
 
         let header = parse_header(&mut reader)?;
 
-        // let decoder = Decoder::Evt21(Evt21Decoder::default());
         let decoder = match header.event_type {
             RawEventType::Evt2 => Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
             RawEventType::Evt21 => Ok(Decoder::Evt21(Evt21Decoder::default())),
