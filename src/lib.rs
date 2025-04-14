@@ -16,20 +16,6 @@ pub mod evt2_1;
 pub mod evt3;
 mod macros;
 
-enum Decoder {
-    Evt21(Evt21Decoder),
-    Evt3(Evt3Decoder),
-}
-
-impl EventDecoder for Decoder {
-    fn decode(&mut self, reader: &mut impl Read) -> impl Iterator<Item = EventCD> {
-        std::iter::from_fn(move || match self {
-            Decoder::Evt21(decoder) => decoder.decode(reader).next(),
-            Decoder::Evt3(decoder) => decoder.decode(reader).next(),
-        })
-    }
-}
-
 // Error types
 #[derive(Error, Debug)]
 pub enum RawFileReaderError {
@@ -58,6 +44,23 @@ pub enum RawFileReaderError {
     Unknown,
 }
 
+enum Decoder {
+    Evt21(Evt21Decoder),
+    Evt3(Evt3Decoder),
+}
+
+impl EventDecoder for Decoder {
+    fn decode<'a>(
+        &'a mut self,
+        reader: &'a mut impl Read,
+    ) -> Box<dyn Iterator<Item = EventCD> + 'a> {
+        match self {
+            Decoder::Evt21(decoder) => decoder.decode(reader),
+            Decoder::Evt3(decoder) => decoder.decode(reader),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct EventCD {
     pub x: u16,
@@ -67,7 +70,10 @@ pub struct EventCD {
 }
 
 pub trait EventDecoder {
-    fn decode(&mut self, reader: &mut impl Read) -> impl Iterator<Item = EventCD>;
+    fn decode<'a>(
+        &'a mut self,
+        reader: &'a mut impl Read,
+    ) -> Box<dyn Iterator<Item = EventCD> + 'a>;
 }
 
 pub struct RawFileReader {
@@ -189,6 +195,7 @@ impl RawFileReader {
 
         let header = parse_header(&mut reader)?;
 
+        // let decoder = Decoder::Evt21(Evt21Decoder::default());
         let decoder = match header.event_type {
             RawEventType::Evt2 => Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
             RawEventType::Evt21 => Ok(Decoder::Evt21(Evt21Decoder::default())),
@@ -204,7 +211,7 @@ impl RawFileReader {
         })
     }
 
-    pub fn read_events(&mut self) -> impl Iterator<Item = EventCD> + use<'_> {
+    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = EventCD> + 'a> {
         self.decoder.decode(&mut self.reader)
     }
 
@@ -212,7 +219,6 @@ impl RawFileReader {
     pub fn reset(&mut self) {
         let file = File::open(&self.path).expect("Cannot read file");
         self.reader = BufReader::with_capacity(32 * 1024, file);
-        // self.decoder = Evt21Decoder::default();
     }
 }
 

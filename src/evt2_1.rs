@@ -44,78 +44,83 @@ pub struct Evt21Decoder {
 }
 
 impl EventDecoder for Evt21Decoder {
-    fn decode(&mut self, reader: &mut impl Read) -> impl Iterator<Item = EventCD> {
-        std::iter::from_fn(move || {
-            let mut buffer = [0u8; 8];
-            match reader.read_exact(&mut buffer) {
-                Ok(()) => {
-                    let mut events = StackVec::<[EventCD; 32]>::new();
+    fn decode<'a>(
+        &'a mut self,
+        reader: &'a mut impl Read,
+    ) -> Box<dyn Iterator<Item = EventCD> + 'a> {
+        Box::new(
+            std::iter::from_fn(move || {
+                let mut buffer = [0u8; 8];
+                match reader.read_exact(&mut buffer) {
+                    Ok(()) => {
+                        let mut events = StackVec::<[EventCD; 32]>::new();
 
-                    // Convert byte chunk into raw event
-                    let raw_event: Evt21 = buffer.as_slice().into();
+                        // Convert byte chunk into raw event
+                        let raw_event: Evt21 = buffer.as_slice().into();
 
-                    match raw_event {
-                        Evt21::EvtNeg {
-                            timestamp,
-                            x,
-                            y,
-                            valid,
-                        } => {
-                            // Compute the full timestamp
-                            if let Some(time_high) = self.time_high {
-                                let time_low = timestamp as u64;
-                                let full_timestamp = time_high | time_low;
-                                let mut mask = valid;
-                                while mask != 0 {
-                                    let offset = mask.trailing_zeros();
-                                    // Clear the lowest set bit
-                                    mask = mask & (mask - 1);
-                                    events.push(EventCD {
-                                        x: x + offset as u16,
-                                        y,
-                                        p: 0,
-                                        t: full_timestamp,
-                                    });
+                        match raw_event {
+                            Evt21::EvtNeg {
+                                timestamp,
+                                x,
+                                y,
+                                valid,
+                            } => {
+                                // Compute the full timestamp
+                                if let Some(time_high) = self.time_high {
+                                    let time_low = timestamp as u64;
+                                    let full_timestamp = time_high | time_low;
+                                    let mut mask = valid;
+                                    while mask != 0 {
+                                        let offset = mask.trailing_zeros();
+                                        // Clear the lowest set bit
+                                        mask = mask & (mask - 1);
+                                        events.push(EventCD {
+                                            x: x + offset as u16,
+                                            y,
+                                            p: 0,
+                                            t: full_timestamp,
+                                        });
+                                    }
                                 }
                             }
-                        }
-                        Evt21::EvtPos {
-                            timestamp,
-                            x,
-                            y,
-                            valid,
-                        } => {
-                            // Compute the full timestamp
-                            if let Some(time_high) = self.time_high {
-                                let time_low = timestamp as u64;
-                                let full_timestamp = time_high | time_low;
-                                let mut mask = valid;
-                                while mask != 0 {
-                                    let offset = mask.trailing_zeros();
-                                    // Clear the lowest set bit
-                                    mask = mask & (mask - 1);
-                                    events.push(EventCD {
-                                        x: x + offset as u16,
-                                        y,
-                                        p: 1,
-                                        t: full_timestamp,
-                                    });
+                            Evt21::EvtPos {
+                                timestamp,
+                                x,
+                                y,
+                                valid,
+                            } => {
+                                // Compute the full timestamp
+                                if let Some(time_high) = self.time_high {
+                                    let time_low = timestamp as u64;
+                                    let full_timestamp = time_high | time_low;
+                                    let mut mask = valid;
+                                    while mask != 0 {
+                                        let offset = mask.trailing_zeros();
+                                        // Clear the lowest set bit
+                                        mask = mask & (mask - 1);
+                                        events.push(EventCD {
+                                            x: x + offset as u16,
+                                            y,
+                                            p: 1,
+                                            t: full_timestamp,
+                                        });
+                                    }
                                 }
                             }
-                        }
-                        Evt21::EvtTimeHigh { timestamp } => {
-                            self.time_high = Some((timestamp as u64) << 6)
-                        }
-                        _ => {
-                            // TODO: Handle Unknown events
-                        }
-                    } // end match type of event
+                            Evt21::EvtTimeHigh { timestamp } => {
+                                self.time_high = Some((timestamp as u64) << 6)
+                            }
+                            _ => {
+                                // TODO: Handle Unknown events
+                            }
+                        } // end match type of event
 
-                    Some(events.into_iter())
+                        Some(events.into_iter())
+                    }
+                    Err(_e) => None,
                 }
-                Err(_e) => None,
-            }
-        })
-        .flatten()
+            })
+            .flatten(),
+        )
     }
 }

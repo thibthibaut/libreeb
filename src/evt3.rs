@@ -89,81 +89,87 @@ pub struct Evt3Decoder {
 }
 
 impl EventDecoder for Evt3Decoder {
-    fn decode(&mut self, reader: &mut impl Read) -> impl Iterator<Item = EventCD> {
-        std::iter::from_fn(move || {
-            let mut buffer = [0u8; 2];
-            match reader.read_exact(&mut buffer) {
-                Ok(()) => {
-                    // let mut events: Vec<EventCD> = Vec::with_capacity(12);
-                    // let mut events = ArrayVec::<_, 12>::new();
-                    let mut events = StackVec::<[EventCD; 12]>::new();
-                    // Convert byte chunk into raw event
-                    let raw_event: Evt3 = buffer.as_slice().into();
+    fn decode<'a>(
+        &'a mut self,
+        reader: &'a mut impl Read,
+    ) -> Box<dyn Iterator<Item = EventCD> + 'a> {
+        Box::new(
+            std::iter::from_fn(move || {
+                let mut buffer = [0u8; 2];
+                match reader.read_exact(&mut buffer) {
+                    Ok(()) => {
+                        // let mut events: Vec<EventCD> = Vec::with_capacity(12);
+                        // let mut events = ArrayVec::<_, 12>::new();
+                        let mut events = StackVec::<[EventCD; 12]>::new();
+                        // Convert byte chunk into raw event
+                        let raw_event: Evt3 = buffer.as_slice().into();
 
-                    match raw_event {
-                        Evt3::EvtAddrY { y, _origin } => self.y = y, // Update State
-                        Evt3::EvtAddrX { x, pol } => {
-                            // Create Event
-                            events.push(EventCD {
-                                x,
-                                y: self.y,
-                                p: pol,
-                                t: self.time,
-                            });
-                        }
-                        Evt3::VectBaseX { x, pol } => {
-                            // Update State
-                            self.polarity = pol;
-                            self.x = x;
-                        }
-                        Evt3::Vect12 { valid } => {
-                            // Create Event
-                            handle_vect!(self, events, valid, 12);
-                        }
-                        Evt3::Vect8 { valid } => {
-                            // Create Event
-                            handle_vect!(self, events, valid, 8);
-                        }
-                        Evt3::EvtTimeLow { time } => {
-                            let event_time = time as u64;
-                            self.time = self.time_base.unwrap_or(0) + event_time;
-                        }
-                        Evt3::EvtTimeHigh { time } => {
-                            if self.time_base.is_none() {
-                                self.time_base = Some((time as u64) << 12);
+                        match raw_event {
+                            Evt3::EvtAddrY { y, _origin } => self.y = y, // Update State
+                            Evt3::EvtAddrX { x, pol } => {
+                                // Create Event
+                                events.push(EventCD {
+                                    x,
+                                    y: self.y,
+                                    p: pol,
+                                    t: self.time,
+                                });
                             }
-
-                            let event_time = time as u64;
-                            let mut new_time_high = event_time << 12;
-                            new_time_high += self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
-
-                            if (self.time_base.unwrap_or(0) > new_time_high)
-                                && (self.time_base.unwrap_or(0) - new_time_high
-                                    >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD)
-                            {
-                                new_time_high += TIME_LOOP_DURATION_US;
-                                self.time_high_loop_nb += 1;
+                            Evt3::VectBaseX { x, pol } => {
+                                // Update State
+                                self.polarity = pol;
+                                self.x = x;
                             }
-                            self.time_base = Some(new_time_high);
-                            self.time = self.time_base.unwrap_or(0);
-                        }
-                        _ => {
-                            // TODO: Handle Unknown events
-                        }
-                    } // end match
+                            Evt3::Vect12 { valid } => {
+                                // Create Event
+                                handle_vect!(self, events, valid, 12);
+                            }
+                            Evt3::Vect8 { valid } => {
+                                // Create Event
+                                handle_vect!(self, events, valid, 8);
+                            }
+                            Evt3::EvtTimeLow { time } => {
+                                let event_time = time as u64;
+                                self.time = self.time_base.unwrap_or(0) + event_time;
+                            }
+                            Evt3::EvtTimeHigh { time } => {
+                                if self.time_base.is_none() {
+                                    self.time_base = Some((time as u64) << 12);
+                                }
 
-                    // Remove invalid events
-                    if self.time_base.is_none() {
-                        events.clear()
+                                let event_time = time as u64;
+                                let mut new_time_high = event_time << 12;
+                                new_time_high +=
+                                    self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
+
+                                if (self.time_base.unwrap_or(0) > new_time_high)
+                                    && (self.time_base.unwrap_or(0) - new_time_high
+                                        >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD)
+                                {
+                                    new_time_high += TIME_LOOP_DURATION_US;
+                                    self.time_high_loop_nb += 1;
+                                }
+                                self.time_base = Some(new_time_high);
+                                self.time = self.time_base.unwrap_or(0);
+                            }
+                            _ => {
+                                // TODO: Handle Unknown events
+                            }
+                        } // end match
+
+                        // Remove invalid events
+                        if self.time_base.is_none() {
+                            events.clear()
+                        }
+                        Some(events.into_iter())
                     }
-                    Some(events.into_iter())
+                    Err(e) => {
+                        eprintln!("Error reading events: {}", e);
+                        None
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Error reading events: {}", e);
-                    None
-                }
-            }
-        })
-        .flatten()
+            })
+            .flatten(),
+        )
     }
 }
