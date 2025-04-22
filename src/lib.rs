@@ -71,7 +71,7 @@ pub struct RawFileReader {
     path: Box<Path>,
     reader: BufReader<File>,
     decoder: Decoder,
-    header: RawFileHeader,
+    pub header: RawFileHeader,
 }
 
 #[derive(Debug)]
@@ -144,7 +144,7 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
     }
 
     // Find the format
-    let evt_format_str = match (event_format_string, event_type_string) {
+    let mut evt_format_str = match (event_format_string, event_type_string) {
         (Some(format), Some(_)) => {
             Ok(format) // TODO Handle the ugly ;;
         }
@@ -154,6 +154,18 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
         (None, Some(evt_type)) => Ok(evt_type),
         (None, None) => Err(RawFileReaderError::EventTypeNotFound),
     }?;
+
+    // For some reason, some header have a different formating where the
+    // format field looks like that: "EVT21;endianness=little;height=320;width=320"
+    // in this case we parse that and it takes precedence over other other fields
+    if evt_format_str.contains(";") {
+        let parts: Vec<String> = evt_format_str.split(";").map(|x| x.to_owned()).collect();
+        evt_format_str = parts
+            .first()
+            .ok_or(RawFileReaderError::ParseHeaderFailed)?
+            .to_string();
+        // TODO: deal with other parts of this ;-separated header
+    }
 
     let event_type = match evt_format_str.as_str() {
         "2.0" | "EVT2" => Ok(RawEventType::Evt21),
