@@ -4,9 +4,9 @@ use crossterm::{
     ExecutableCommand,
 };
 use itertools::Itertools;
-use libreeb::{slice_events, EventCD, RawFileReader, SliceBy};
+use libreeb::{slice_events, Event, RawFileReader, SliceBy};
 use ratatui::{
-    crossterm::event::{self, Event, KeyCode, MouseEventKind},
+    crossterm::event::{self, KeyCode, MouseEventKind},
     layout::{Alignment, Constraint, Layout, Position, Rect},
     style::{Color, Stylize},
     symbols::Marker,
@@ -30,16 +30,30 @@ fn main() -> Result<()> {
 
     let path: String = pargs.value_from_str("--input")?;
 
-    // stdout().execute(EnableMouseCapture)?;
-    // let terminal = ratatui::init();
+    stdout().execute(EnableMouseCapture)?;
+    let terminal = ratatui::init();
     let mut reader = RawFileReader::new(Path::new(&path))?;
-    let mut it = reader.read_events();
-    println!("{:?}", it.next());
-    // let app_result = App::new(reader).run(terminal);
-    // ratatui::restore();
-    // stdout().execute(DisableMouseCapture)?;
-    // app_result
-    Ok(())
+    println!("HEADER: {:?}", &reader.header);
+    // let mut it = reader.read_events();
+
+    // let mut events = it.collect_vec();
+    // let first = events.first();
+    // let last = events.last();
+    // println!("first: {:?}, last {:?}", first, last);
+    // reader.reversed()
+
+    // let mut sum = 0;
+    // for evt in it {
+    //     println!("{:?}", evt);
+    //     sum += 1
+    // }
+
+    // println!("{:?}", sum);
+    let app_result = App::new(reader).run(terminal);
+    ratatui::restore();
+    stdout().execute(DisableMouseCapture)?;
+    app_result
+    // Ok(())
 }
 
 struct App {
@@ -88,8 +102,8 @@ impl App {
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if event::poll(timeout)? {
                 match event::read()? {
-                    Event::Key(key) => self.handle_key_press(key),
-                    Event::Mouse(event) => self.handle_mouse_event(event),
+                    crossterm::event::Event::Key(key) => self.handle_key_press(key),
+                    crossterm::event::Event::Mouse(event) => self.handle_mouse_event(event),
                     _ => (),
                 }
             }
@@ -136,21 +150,30 @@ impl App {
             return;
         }
         // let data = self.file_reader.read_events().take(4048 * 2).collect_vec();
-        let data = slice_events(self.file_reader.read_events(), SliceBy::Time(3_000)).next();
+        let data = slice_events(self.file_reader.read_events(), SliceBy::Time(2000)).next();
 
-        if let Some(data) = data {
-            self.current_timetamp = data.first().unwrap().t;
+        if let Some(mut data) = data {
+            // Keep only cd events (for now) TODO: Maybe handle external triggers
+            data.retain(|e| matches!(e, Event::CD { .. }));
+
+            self.current_timetamp = data.first().unwrap().timestamp().unwrap();
 
             self.positive_points = data
                 .iter()
-                .filter(|evt| evt.p == 1)
-                .map(|evt| Position { x: evt.x, y: evt.y })
+                .filter(|evt| evt.polarity().unwrap() == 1)
+                .map(|evt| Position {
+                    x: evt.x().unwrap(),
+                    y: evt.y().unwrap(),
+                })
                 .collect_vec();
 
             self.negative_points = data
                 .iter()
-                .filter(|evt| evt.p == 0)
-                .map(|evt| Position { x: evt.x, y: evt.y })
+                .filter(|evt| evt.polarity().unwrap() == 0)
+                .map(|evt| Position {
+                    x: evt.x().unwrap(),
+                    y: evt.y().unwrap(),
+                })
                 .collect_vec();
         } else {
             self.file_reader.reset();

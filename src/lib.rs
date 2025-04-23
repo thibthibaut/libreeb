@@ -51,20 +51,50 @@ enum Decoder {
     Evt3(Evt3Decoder),
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
-pub struct EventCD {
-    pub x: u16,
-    pub y: u16,
-    pub p: u8,
-    pub t: u64,
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Event {
+    CD { x: u16, y: u16, p: u8, t: u64 },
+    ExternalTrigger { id: u8, p: u8 },
+    Unknown,
+}
+
+impl Event {
+    pub fn timestamp(&self) -> Option<u64> {
+        if let Event::CD { t, .. } = self {
+            Some(*t)
+        } else {
+            None
+        }
+    }
+
+    pub fn polarity(&self) -> Option<u8> {
+        match self {
+            Event::CD { p, .. } => Some(*p),
+            Event::ExternalTrigger { p, .. } => Some(*p),
+            _ => None,
+        }
+    }
+
+    pub fn x(&self) -> Option<u16> {
+        if let Event::CD { x, .. } = self {
+            Some(*x)
+        } else {
+            None
+        }
+    }
+
+    pub fn y(&self) -> Option<u16> {
+        if let Event::CD { y, .. } = self {
+            Some(*y)
+        } else {
+            None
+        }
+    }
 }
 
 #[enum_dispatch]
 pub trait EventDecoder {
-    fn decode<'a>(
-        &'a mut self,
-        reader: &'a mut impl Read,
-    ) -> Box<dyn Iterator<Item = EventCD> + 'a>;
+    fn decode<'a>(&'a mut self, reader: &'a mut impl Read) -> Box<dyn Iterator<Item = Event> + 'a>;
 }
 
 pub struct RawFileReader {
@@ -109,7 +139,7 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
         // Look at the next char without consuming it
         let buffer = reader
             .fill_buf()
-            .map_err(|e| RawFileReaderError::ReadBytesFailed)?;
+            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?; // TODO: Propagate the error
 
         let next_char = buffer.first().ok_or(RawFileReaderError::ReadBytesFailed)?;
 
@@ -122,7 +152,7 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
         let mut header_line = String::new();
         reader
             .read_line(&mut header_line)
-            .map_err(|e| RawFileReaderError::ReadBytesFailed)?;
+            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?; // TODO: Propagate the error
 
         let mut parts = header_line.trim_start_matches('%').trim().splitn(2, ' ');
         let key = parts.next().ok_or(RawFileReaderError::ParseHeaderFailed)?;
@@ -212,7 +242,7 @@ impl RawFileReader {
         })
     }
 
-    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = EventCD> + 'a> {
+    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = Event> + 'a> {
         self.decoder.decode(&mut self.reader)
     }
 
@@ -233,51 +263,60 @@ pub enum SliceBy {
     Both(u64, usize),
 }
 
-pub fn slice_events<I>(events: I, slice_by: SliceBy) -> impl Iterator<Item = Vec<EventCD>>
+pub fn slice_events<I>(events: I, slice_by: SliceBy) -> impl Iterator<Item = Vec<Event>>
 where
-    I: Iterator<Item = EventCD>,
+    I: Iterator<Item = Event>,
 {
     let mut iter = events.peekable();
 
-    // Estimate capacity based on slice configuration
+    // Estimate capacity
     let estimated_capacity = match &slice_by {
         SliceBy::Count(count) => *count,
-        SliceBy::Time(_) => 100_000, // Assuming up to 100,000 events per millisecond
+        SliceBy::Time(_) => 100_000,
         SliceBy::Both(_, count) => *count,
     };
 
     std::iter::from_fn(move || {
-        let first = iter.next()?;
-
-        let (slice_end_time, max_count) = match slice_by {
-            SliceBy::Time(micros) => (Some(first.t + micros), None),
-            SliceBy::Count(count) => (None, Some(count)),
-            SliceBy::Both(micros, count) => (Some(first.t + micros), Some(count)),
+        // Find the first event that has a timestamp
+        let first = loop {
+            match iter.next() {
+                Some(e) if e.timestamp().is_some() => break e,
+                Some(_) => continue,
+                None => return None,
+            }
         };
 
-        // Pre-allocate with estimated capacity
+        let first_ts = first.timestamp().unwrap();
+
+        let (slice_end_time, max_count) = match slice_by {
+            SliceBy::Time(micros) => (Some(first_ts + micros), None),
+            SliceBy::Count(count) => (None, Some(count)),
+            SliceBy::Both(micros, count) => (Some(first_ts + micros), Some(count)),
+        };
+
         let mut slice = Vec::with_capacity(estimated_capacity);
         slice.push(first);
 
-        // If we're slicing by count only
         if slice_end_time.is_none() {
             let count = max_count.unwrap();
             slice.extend(iter.by_ref().take(count - 1));
             return Some(slice);
         }
 
-        // If we're slicing by time or both
         let end_time = slice_end_time.unwrap();
         if let Some(count) = max_count {
-            // Both time and count
             slice.extend(
                 iter.by_ref()
-                    .take_while(|event| event.t < end_time)
+                    .filter(|e| e.timestamp().is_some())
+                    .take_while(|e| e.timestamp().unwrap() < end_time)
                     .take(count - 1),
             );
         } else {
-            // Time only
-            slice.extend(iter.by_ref().take_while(|event| event.t < end_time));
+            slice.extend(
+                iter.by_ref()
+                    .filter(|e| e.timestamp().is_some())
+                    .take_while(|e| e.timestamp().unwrap() < end_time),
+            );
         }
 
         Some(slice)

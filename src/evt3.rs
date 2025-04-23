@@ -1,4 +1,4 @@
-use crate::{define_raw_evt, EventCD, EventDecoder};
+use crate::{define_raw_evt, Event, EventDecoder};
 use stackvector::StackVec;
 use std::io::Read;
 
@@ -47,9 +47,9 @@ define_raw_evt! {
         },
         ExtTrigger (0xA){
             #[8,4]
-            _trigger_channel_id: u8,
+            id: u8,
             #[0,1]
-            _trigger_value: u8
+            polarity: u8
         }
     }
 }
@@ -61,7 +61,7 @@ macro_rules! handle_vect {
 
         for i in $state.x..end {
             if valid_bits & 1 == 1 {
-                $events.push(EventCD {
+                $events.push(Event::CD {
                     x: i,
                     y: $state.y,
                     p: $state.polarity,
@@ -89,18 +89,13 @@ pub struct Evt3Decoder {
 }
 
 impl EventDecoder for Evt3Decoder {
-    fn decode<'a>(
-        &'a mut self,
-        reader: &'a mut impl Read,
-    ) -> Box<dyn Iterator<Item = EventCD> + 'a> {
+    fn decode<'a>(&'a mut self, reader: &'a mut impl Read) -> Box<dyn Iterator<Item = Event> + 'a> {
         Box::new(
             std::iter::from_fn(move || {
                 let mut buffer = [0u8; 2];
                 match reader.read_exact(&mut buffer) {
                     Ok(()) => {
-                        // let mut events: Vec<EventCD> = Vec::with_capacity(12);
-                        // let mut events = ArrayVec::<_, 12>::new();
-                        let mut events = StackVec::<[EventCD; 12]>::new();
+                        let mut events = StackVec::<[Event; 12]>::new();
                         // Convert byte chunk into raw event
                         let raw_event: Evt3 = buffer.as_slice().into();
 
@@ -108,7 +103,7 @@ impl EventDecoder for Evt3Decoder {
                             Evt3::EvtAddrY { y, _origin } => self.y = y, // Update State
                             Evt3::EvtAddrX { x, pol } => {
                                 // Create Event
-                                events.push(EventCD {
+                                events.push(Event::CD {
                                     x,
                                     y: self.y,
                                     p: pol,
@@ -152,8 +147,11 @@ impl EventDecoder for Evt3Decoder {
                                 self.time_base = Some(new_time_high);
                                 self.time = self.time_base.unwrap_or(0);
                             }
+                            Evt3::ExtTrigger { id, polarity } => {
+                                events.push(Event::ExternalTrigger { id, p: polarity })
+                            }
                             _ => {
-                                // TODO: Handle Unknown events
+                                events.push(Event::Unknown);
                             }
                         } // end match
 

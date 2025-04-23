@@ -1,8 +1,8 @@
-use crate::{define_raw_evt, EventCD, EventDecoder};
+use crate::{define_raw_evt, Event, EventDecoder};
 use stackvector::StackVec;
 use std::io::Read;
 
-// Define EVT2.1 events, the layout is:
+// EVT2.1 raw events definition, the layout is:
 //
 // 63        60 59                         0
 // +---4 bits--+-------60 bits------------+
@@ -34,6 +34,14 @@ define_raw_evt! {
         EvtTimeHigh (0x8) {
             #[32,28]
             timestamp: u32
+        },
+        ExtTrigger (0xa) {
+            #[54,6]
+            timestamp: u16,
+            #[40,5]
+            id: u8,
+            #[32,1]
+            polarity: u8
         }
     }
 }
@@ -44,16 +52,13 @@ pub struct Evt21Decoder {
 }
 
 impl EventDecoder for Evt21Decoder {
-    fn decode<'a>(
-        &'a mut self,
-        reader: &'a mut impl Read,
-    ) -> Box<dyn Iterator<Item = EventCD> + 'a> {
+    fn decode<'a>(&'a mut self, reader: &'a mut impl Read) -> Box<dyn Iterator<Item = Event> + 'a> {
         Box::new(
             std::iter::from_fn(move || {
                 let mut buffer = [0u8; 8];
                 match reader.read_exact(&mut buffer) {
                     Ok(()) => {
-                        let mut events = StackVec::<[EventCD; 32]>::new();
+                        let mut events = StackVec::<[Event; 32]>::new();
 
                         // Convert byte chunk into raw event
                         let raw_event: Evt21 = buffer.as_slice().into();
@@ -74,7 +79,7 @@ impl EventDecoder for Evt21Decoder {
                                         let offset = mask.trailing_zeros();
                                         // Clear the lowest set bit
                                         mask = mask & (mask - 1);
-                                        events.push(EventCD {
+                                        events.push(Event::CD {
                                             x: x + offset as u16,
                                             y,
                                             p: 0,
@@ -98,7 +103,7 @@ impl EventDecoder for Evt21Decoder {
                                         let offset = mask.trailing_zeros();
                                         // Clear the lowest set bit
                                         mask = mask & (mask - 1);
-                                        events.push(EventCD {
+                                        events.push(Event::CD {
                                             x: x + offset as u16,
                                             y,
                                             p: 1,
@@ -110,9 +115,12 @@ impl EventDecoder for Evt21Decoder {
                             Evt21::EvtTimeHigh { timestamp } => {
                                 self.time_high = Some((timestamp as u64) << 6)
                             }
-                            _ => {
-                                // TODO: Handle Unknown events
-                            }
+                            Evt21::ExtTrigger {
+                                timestamp: _, // TODO: propagate external trigger
+                                id,
+                                polarity,
+                            } => events.push(Event::ExternalTrigger { id, p: polarity }),
+                            _ => events.push(Event::Unknown),
                         } // end match type of event
 
                         Some(events.into_iter())
