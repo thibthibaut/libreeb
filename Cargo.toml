@@ -17,6 +17,14 @@ stackvector = "1.1.1"
 thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting"] }
 
+[dev-dependencies]
+xxhash-rust = {version ="0.8.3", features = ["xxh64"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmark"
+harness = false
+
 [profile.release]
 codegen-units = 1
 lto = "fat"

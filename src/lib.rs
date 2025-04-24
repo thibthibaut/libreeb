@@ -325,3 +325,36 @@ where
         Some(slice)
     })
 }
+
+// Test module
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::hash::Hasher;
+    use xxhash_rust::xxh64::Xxh64;
+    fn compute_checksum<I>(events: I) -> u64
+    where
+        I: Iterator<Item = Event>,
+    {
+        let mut hasher = Xxh64::new(0);
+        for e in events {
+            if let Event::CD { x, y, p, t } = e {
+                hasher.write_u16(x);
+                hasher.write_u16(y);
+                hasher.write_u8(p);
+                hasher.write_u64(t);
+            }
+        }
+        hasher.finish()
+    }
+    #[test]
+    fn test_evt3_decoder() {
+        let path = Path::new("data/openeb/gen4_evt2_hand.raw");
+        let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
+        let event_iterator = reader.read_events();
+        let checksum = compute_checksum(event_iterator);
+
+        assert_eq!(checksum, 0xe88f212d23634df);
+        println!("Checksum: {:#x}", checksum);
+    }
+}
