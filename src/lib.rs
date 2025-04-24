@@ -10,9 +10,11 @@ use std::{
 use thiserror::Error;
 
 // Re-export decoders as public
+pub use evt2::*;
 pub use evt2_1::*;
 pub use evt3::*;
 
+pub mod evt2;
 pub mod evt2_1;
 pub mod evt3;
 mod macros;
@@ -47,6 +49,7 @@ pub enum RawFileReaderError {
 
 #[enum_dispatch(EventDecoder)]
 enum Decoder {
+    Evt2(Evt2Decoder),
     Evt21(Evt21Decoder),
     Evt3(Evt3Decoder),
 }
@@ -228,7 +231,7 @@ impl RawFileReader {
         let header = parse_header(&mut reader)?;
 
         let decoder = match header.event_type {
-            RawEventType::Evt2 => Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
+            RawEventType::Evt2 => Ok(Decoder::Evt2(Evt2Decoder::default())),
             RawEventType::Evt21 => Ok(Decoder::Evt21(Evt21Decoder::default())),
             RawEventType::Evt3 => Ok(Decoder::Evt3(Evt3Decoder::default())),
             RawEventType::Evt4 => Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
