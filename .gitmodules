@@ -1,0 +1,3 @@
+[submodule "openeb/openeb"]
+	path = openeb/openeb
+	url = https://github.com/prophesee-ai/openeb.git
