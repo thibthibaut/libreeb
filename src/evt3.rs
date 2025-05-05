@@ -161,10 +161,7 @@ impl EventDecoder for Evt3Decoder {
                         }
                         Some(events.into_iter())
                     }
-                    Err(e) => {
-                        eprintln!("Error reading events: {}", e);
-                        None
-                    }
+                    Err(_e) => None,
                 }
             })
             .flatten(),

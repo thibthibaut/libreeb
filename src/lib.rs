@@ -332,7 +332,7 @@ mod tests {
     use super::*;
     use std::hash::Hasher;
     use xxhash_rust::xxh64::Xxh64;
-    fn compute_checksum<I>(events: I) -> u64
+    fn compute_hash<I>(events: I) -> u64
     where
         I: Iterator<Item = Event>,
     {
@@ -347,14 +347,22 @@ mod tests {
         }
         hasher.finish()
     }
+
     #[test]
     fn test_evt3_decoder() {
-        let path = Path::new("data/openeb/gen4_evt2_hand.raw");
+        let path = Path::new("data/openeb/gen4_evt3_hand.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
         let event_iterator = reader.read_events();
-        let checksum = compute_checksum(event_iterator);
+        let hash = compute_hash(event_iterator);
+        assert_eq!(hash, 0xeb46994708e41cb9);
+    }
 
-        assert_eq!(checksum, 0xe88f212d23634df);
-        println!("Checksum: {:#x}", checksum);
+    #[test]
+    fn test_evt21_decoder() {
+        let path = Path::new("data/openeb/claque_doigt_evt21.raw");
+        let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
+        let event_iterator = reader.read_events();
+        let hash = compute_hash(event_iterator);
+        assert_eq!(hash, 0x1bf31f5b25480a8a);
     }
 }
