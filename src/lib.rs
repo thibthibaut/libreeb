@@ -226,14 +226,14 @@ impl RawFileReader {
         let file =
             File::open(path).map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
 
-        let mut reader = BufReader::with_capacity(32 * 1024, file);
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
 
         let header = parse_header(&mut reader)?;
 
         let decoder = match header.event_type {
             RawEventType::Evt2 => Ok(Decoder::Evt2(Evt2Decoder::default())),
             RawEventType::Evt21 => Ok(Decoder::Evt21(Evt21Decoder::default())),
-            RawEventType::Evt3 => Ok(Decoder::Evt3(Evt3Decoder::default())),
+            RawEventType::Evt3 => Ok(Decoder::Evt3(Evt3Decoder)),
             RawEventType::Evt4 => Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
         }?;
 
@@ -339,6 +339,7 @@ mod tests {
         let mut hasher = Xxh64::new(0);
         for e in events {
             if let Event::CD { x, y, p, t } = e {
+                // println!("{},{},{},{}", x, y, p, t);
                 hasher.write_u16(x);
                 hasher.write_u16(y);
                 hasher.write_u8(p);
@@ -365,4 +366,13 @@ mod tests {
         let hash = compute_hash(event_iterator);
         assert_eq!(hash, 0x1bf31f5b25480a8a);
     }
+
+    // #[test]
+    // fn test_evt2_decoder() {
+    //     let path = Path::new("data/openeb/gen4_evt2_hand.raw");
+    //     let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
+    //     let event_iterator = reader.read_events();
+    //     let hash = compute_hash(event_iterator);
+    //     assert_eq!(hash, 0xbd1b3ff8ddb1c91b);
+    // }
 }

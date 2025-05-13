@@ -16,6 +16,7 @@ ratatui = "0.29.0"
 stackvector = "1.1.1"
 thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting"] }
+zerocopy = {version = "0.8.25", features = ["derive", "simd-nightly"] }
 
 [dev-dependencies]
 xxhash-rust = {version ="0.8.3", features = ["xxh64"] }
@@ -39,3 +40,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "eb_viewer"
 path = "src/main.rs"
+
+[[bin]]
+name = "bench_evt3"
+path = "src/bench_evt3.rs"

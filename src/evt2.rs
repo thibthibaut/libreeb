@@ -21,7 +21,7 @@ define_raw_evt! {
         CDon(0x1) {
             #[22,6]
             timestamp: u16,
-            #[21,11]
+            #[11,11]
             x: u16,
             #[0,11]
             y: u16
