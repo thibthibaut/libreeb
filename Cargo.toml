@@ -6,20 +6,29 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bytemuck = { version = "1.23.0", features = [
+  "derive",
+  "aarch64_simd",
+  "avx512_simd",
+  "derive",
+  "nightly_portable_simd",
+  "nightly_stdsimd",
+] }
 byteorder = "1.5.0"
 color-eyre = "0.6.3"
 crossterm = "0.28.1"
 enum_dispatch = "0.3.13"
+fixed-vec-deque = "0.1.11"
 itertools = "0.13.0"
 pico-args = "0.5.0"
 ratatui = "0.29.0"
 stackvector = "1.1.1"
 thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting"] }
-zerocopy = {version = "0.8.25", features = ["derive", "simd-nightly"] }
+zerocopy = { version = "0.8.25", features = ["derive", "simd", "simd-nightly"] }
 
 [dev-dependencies]
-xxhash-rust = {version ="0.8.3", features = ["xxh64"] }
+xxhash-rust = { version = "0.8.3", features = ["xxh64"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
@@ -32,6 +41,7 @@ lto = "fat"
 rustflags = ["-C", "target-cpu=native"]
 panic = "abort"
 debug = true
+strip = false
 
 [lib]
 name = "libreeb"

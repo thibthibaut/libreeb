@@ -1,4 +1,6 @@
-#![feature(impl_trait_in_assoc_type)]
+// #![feature(impl_trait_in_assoc_type)]
+#![feature(portable_simd)]
+#![feature(trivial_bounds)]
 
 use enum_dispatch::enum_dispatch;
 use std::{
@@ -54,10 +56,19 @@ enum Decoder {
     Evt3(Evt3Decoder),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Event {
-    CD { x: u16, y: u16, p: u8, t: u64 },
-    ExternalTrigger { id: u8, p: u8 },
+    CD {
+        x: u16,
+        y: u16,
+        p: u8,
+        t: u64,
+    },
+    ExternalTrigger {
+        id: u8,
+        p: u8,
+    },
+    #[default]
     Unknown,
 }
 
