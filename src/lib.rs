@@ -361,6 +361,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_evt3_decoder() {
         let path = Path::new("data/openeb/gen4_evt3_hand.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");

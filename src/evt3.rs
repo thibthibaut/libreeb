@@ -1,8 +1,92 @@
 use crate::{Event, EventDecoder};
+use bin_proto::*;
 use bytemuck::{Pod, Zeroable};
 use fixed_vec_deque::FixedVecDeque;
 use std::{collections::VecDeque, io::Read, simd::u16x32};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
+
+#[derive(Debug, BitDecode, BitEncode, PartialEq)]
+#[codec(discriminant_type = u8, bits = 4)] // 4-bit discriminant
+#[repr(u16)] // Ensure the whole thing fits in u16
+enum Evt3Codec {
+    #[codec(discriminant = 0b0000)]
+    VectBase {
+        #[codec(bits = 1)]
+        valid: bool, // 1 bit
+        #[codec(bits = 6)]
+        vect_base_x: u8, // 6 bits
+        #[codec(bits = 5)]
+        vect_base_y: u8, // 5 bits
+    },
+
+    #[codec(discriminant = 0b0001)]
+    VectOff {
+        #[codec(bits = 1)]
+        valid: bool, // 1 bit
+        #[codec(bits = 4)]
+        nb_vect_off: u8, // 4 bits
+        #[codec(bits = 4)]
+        vect_off_x: u8, // 4 bits
+        #[codec(bits = 3)]
+        vect_off_y: u8, // 3 bits
+    },
+
+    #[codec(discriminant = 0b0010)]
+    EvtAddr {
+        #[codec(bits = 1)]
+        system_type: bool, // 1 bit
+        #[codec(bits = 1)]
+        pol: bool, // 1 bit
+        #[codec(bits = 5)]
+        x: u8, // 5 bits
+        #[codec(bits = 5)]
+        y: u8, // 5 bits
+    },
+
+    #[codec(discriminant = 0b0011)]
+    EvtAddrY {
+        #[codec(bits = 1)]
+        system_type: bool, // 1 bit
+        #[codec(bits = 1)]
+        pol: bool, // 1 bit
+        #[codec(bits = 10)]
+        y: u16, // 10 bits
+    },
+
+    #[codec(discriminant = 0b0100)]
+    EvtAddrX {
+        #[codec(bits = 1)]
+        system_type: bool, // 1 bit
+        #[codec(bits = 1)]
+        pol: bool, // 1 bit
+        #[codec(bits = 10)]
+        x: u16, // 10 bits
+    },
+
+    #[codec(discriminant = 0b0110)]
+    EvtTimeLow {
+        #[codec(bits = 12)]
+        evt_time_low: u16, // 12 bits
+    },
+
+    #[codec(discriminant = 0b1000)]
+    EvtTimeHigh {
+        #[codec(bits = 12)]
+        evt_time_high: u16, // 12 bits
+    },
+
+    #[codec(discriminant = 0b1110)]
+    Others {
+        #[codec(bits = 12)]
+        data: u16, // 12 bits
+    },
+
+    #[codec(discriminant = 0b1111)]
+    Continued12 {
+        #[codec(bits = 12)]
+        data: u16, // 12 bits
+    },
+}
 
 /// Struct for holding raw EVT3 types
 #[derive(FromBytes, Immutable, KnownLayout, Copy, Clone, Pod, Zeroable)]
