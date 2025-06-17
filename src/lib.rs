@@ -1,10 +1,6 @@
-// #![feature(impl_trait_in_assoc_type)]
-#![feature(portable_simd)]
-#![feature(trivial_bounds)]
-
-use enum_dispatch::enum_dispatch;
+use evt_reader::EvtReader;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::File,
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -12,13 +8,14 @@ use std::{
 use thiserror::Error;
 
 // Re-export decoders as public
-pub use evt2::*;
+// pub use evt2::*;
 pub use evt2_1::*;
-pub use evt3::*;
+// pub use evt3::*;
 
-pub mod evt2;
+// pub mod evt2;
 pub mod evt2_1;
-pub mod evt3;
+// pub mod evt3;
+mod evt_reader;
 mod macros;
 
 // Error types
@@ -47,13 +44,6 @@ pub enum RawFileReaderError {
 
     #[error("An unknown error occurred")]
     Unknown,
-}
-
-#[enum_dispatch(EventDecoder)]
-enum Decoder {
-    Evt2(Evt2Decoder),
-    Evt21(Evt21Decoder),
-    Evt3(Evt3Decoder),
 }
 
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
@@ -106,16 +96,16 @@ impl Event {
     }
 }
 
-#[enum_dispatch]
-pub trait EventDecoder {
-    fn decode<'a>(&'a mut self, reader: &'a mut impl Read) -> Box<dyn Iterator<Item = Event> + 'a>;
+trait EventDecoder {
+    type RawEventType: zerocopy::FromBytes + zerocopy::Immutable + zerocopy::KnownLayout + Copy;
+    fn new() -> Self;
+    fn decode(&mut self, raw_event: &[Self::RawEventType], event_queue: &mut VecDeque<Event>);
 }
 
 pub struct RawFileReader {
-    path: Box<Path>,
-    reader: BufReader<File>,
-    decoder: Decoder,
     pub header: RawFileHeader,
+    path: Box<Path>,
+    event_iterator: Box<dyn Iterator<Item = Event>>,
 }
 
 #[derive(Debug)]
@@ -137,6 +127,7 @@ pub struct CameraGeometry {
     pub width: u32,
     pub height: u32,
 }
+
 #[derive(Debug)]
 pub struct RawFileHeader {
     pub header_dict: HashMap<String, String>,
@@ -189,12 +180,8 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
 
     // Find the format
     let mut evt_format_str = match (event_format_string, event_type_string) {
-        (Some(format), Some(_)) => {
-            Ok(format) // TODO Handle the ugly ;;
-        }
-        (Some(format), None) => {
-            Ok(format) // TODO Handle the ugly ;;
-        }
+        (Some(format), Some(_)) => Ok(format),
+        (Some(format), None) => Ok(format),
         (None, Some(evt_type)) => Ok(evt_type),
         (None, None) => Err(RawFileReaderError::EventTypeNotFound),
     }?;
@@ -241,29 +228,26 @@ impl RawFileReader {
 
         let header = parse_header(&mut reader)?;
 
-        let decoder = match header.event_type {
-            RawEventType::Evt2 => Ok(Decoder::Evt2(Evt2Decoder::default())),
-            RawEventType::Evt21 => Ok(Decoder::Evt21(Evt21Decoder::default())),
-            RawEventType::Evt3 => Ok(Decoder::Evt3(Evt3Decoder)),
-            RawEventType::Evt4 => Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
-        }?;
+        let decoder = Evt21Decoder::new();
+        let event_iterator = EvtReader::new(reader, decoder);
+        let event_iterator = Box::new(event_iterator);
 
         Ok(RawFileReader {
             path: path.into(),
-            reader,
-            decoder,
+            event_iterator,
             header,
         })
     }
 
+    // TODO: rename this function
     pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = Event> + 'a> {
-        self.decoder.decode(&mut self.reader)
+        Box::new(&mut self.event_iterator)
     }
 
     /// Resets the file reader
     pub fn reset(&mut self) {
-        let file = File::open(&self.path).expect("Cannot read file");
-        self.reader = BufReader::with_capacity(32 * 1024, file);
+        let decoder = Self::new(&self.path).unwrap();
+        *self = decoder;
     }
 }
 
@@ -379,12 +363,13 @@ mod tests {
         assert_eq!(hash, 0x1bf31f5b25480a8a);
     }
 
-    // #[test]
-    // fn test_evt2_decoder() {
-    //     let path = Path::new("data/openeb/gen4_evt2_hand.raw");
-    //     let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
-    //     let event_iterator = reader.read_events();
-    //     let hash = compute_hash(event_iterator);
-    //     assert_eq!(hash, 0xbd1b3ff8ddb1c91b);
-    // }
+    #[test]
+    #[ignore]
+    fn test_evt2_decoder() {
+        let path = Path::new("data/openeb/gen4_evt2_hand.raw");
+        let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
+        let event_iterator = reader.read_events();
+        let hash = compute_hash(event_iterator);
+        assert_eq!(hash, 0xbd1b3ff8ddb1c91b);
+    }
 }
