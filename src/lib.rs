@@ -1,8 +1,9 @@
+use enum_dispatch::enum_dispatch;
 use evt_reader::EvtReader;
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
-    io::{self, BufRead, BufReader, Read},
+    io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
 };
 use thiserror::Error;
@@ -10,11 +11,11 @@ use thiserror::Error;
 // Re-export decoders as public
 // pub use evt2::*;
 pub use evt2_1::*;
-// pub use evt3::*;
+pub use evt3::*;
 
 // pub mod evt2;
 pub mod evt2_1;
-// pub mod evt3;
+pub mod evt3;
 mod evt_reader;
 mod macros;
 
@@ -96,7 +97,13 @@ impl Event {
     }
 }
 
-trait EventDecoder {
+#[enum_dispatch(Iterator)]
+pub enum DynamicEvtReader {
+    Evt21(EvtReader<BufReader<File>, Evt21Decoder>),
+    Evt3(EvtReader<BufReader<File>, Evt3Decoder>),
+}
+
+pub trait EventDecoder {
     type RawEventType: zerocopy::FromBytes + zerocopy::Immutable + zerocopy::KnownLayout + Copy;
     fn new() -> Self;
     fn decode(&mut self, raw_event: &[Self::RawEventType], event_queue: &mut VecDeque<Event>);
@@ -228,9 +235,17 @@ impl RawFileReader {
 
         let header = parse_header(&mut reader)?;
 
-        let decoder = Evt21Decoder::new();
-        let event_iterator = EvtReader::new(reader, decoder);
-        let event_iterator = Box::new(event_iterator);
+        let event_iterator: Box<dyn Iterator<Item = Event>> = match header.event_type {
+            RawEventType::Evt21 => {
+                let becoder = Evt21Decoder::new();
+                Box::new(EvtReader::new(reader, becoder))
+            }
+            RawEventType::Evt3 => {
+                let becoder = Evt3Decoder::new();
+                Box::new(EvtReader::new(reader, becoder))
+            }
+            _ => return Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
+        };
 
         Ok(RawFileReader {
             path: path.into(),
@@ -345,7 +360,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_evt3_decoder() {
         let path = Path::new("data/openeb/gen4_evt3_hand.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");

@@ -67,12 +67,16 @@ impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
                 continue;
             }
 
-            // Compute the size
-            let size = self.read_buffer_cursor - (self.read_buffer_cursor % 8);
+            let word_size = std::mem::size_of::<D::RawEventType>();
 
-            let evts =
-                <[D::RawEventType]>::ref_from_bytes_with_elems(&self.buffer.0[..size], size / 8)
-                    .unwrap();
+            // Compute the size
+            let size = self.read_buffer_cursor - (self.read_buffer_cursor % word_size);
+
+            let evts = <[D::RawEventType]>::ref_from_bytes_with_elems(
+                &self.buffer.0[..size],
+                size / word_size,
+            )
+            .unwrap();
 
             // Reset the cursor
             self.read_buffer_cursor = 0;
