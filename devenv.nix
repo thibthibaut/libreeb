@@ -5,7 +5,9 @@
   env.GREET = "devenv";
 
   # https://devenv.sh/packages/
-  packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost184 pkgs.boost184.dev pkgs.opencv ];
+  packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost184 pkgs.boost184.dev pkgs.opencv
+    pkgs.maturin
+  ];
 
   env.BOOST_ROOT = "${pkgs.boost184.dev}";
   env.BOOST_INCLUDEDIR = "${pkgs.boost184.dev}/include";
@@ -15,7 +17,7 @@
   languages.rust = {
     enable = true;
     # https://devenv.sh/reference/options/#languagesrustchannel
-    channel = "nightly";
+    channel = "stable";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer"  ];
   };
 

@@ -11,6 +11,7 @@ crossterm = "0.28.1"
 enum_dispatch = "0.3.13"
 itertools = "0.13.0"
 pico-args = "0.5.0"
+rand = "0.9.1"
 ratatui = "0.29.0"
 thiserror = "2.0.12"
 time = { version = "0.3.39", features = ["formatting"] }
@@ -35,7 +36,8 @@ strip = false
 [lib]
 name = "libreeb"
 path = "src/lib.rs"
-
+# crate-type = ["cdylib"]
+crate-type = ["rlib", "cdylib"]
 [[bin]]
 name = "eb_viewer"
 path = "src/main.rs"
@@ -43,3 +45,8 @@ path = "src/main.rs"
 [[bin]]
 name = "bench_evt3"
 path = "src/bench_evt3.rs"
+
+[dependencies.pyo3]
+version = "0.24.0"
+# "abi3-py38" tells pyo3 (and maturin) to build using the stable ABI with minimum Python version 3.8
+features = ["abi3-py38"]

@@ -1,5 +1,6 @@
 use enum_dispatch::enum_dispatch;
 use evt_reader::EvtReader;
+use pyo3::prelude::*;
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
@@ -7,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
-
 // Re-export decoders as public
 // pub use evt2::*;
 pub use evt2_1::*;
@@ -46,24 +46,17 @@ pub enum RawFileReaderError {
     #[error("An unknown error occurred")]
     Unknown,
 }
-
-#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
+#[pyclass]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Event {
-    CD {
-        x: u16,
-        y: u16,
-        p: u8,
-        t: u64,
-    },
-    ExternalTrigger {
-        id: u8,
-        p: u8,
-    },
-    #[default]
-    Unknown,
+    CD { x: u16, y: u16, p: u8, t: u64 },
+    ExternalTrigger { id: u8, p: u8 },
+    Unknown(),
 }
 
+#[pymethods]
 impl Event {
+    #[getter]
     pub fn timestamp(&self) -> Option<u64> {
         if let Event::CD { t, .. } = self {
             Some(*t)
@@ -72,6 +65,7 @@ impl Event {
         }
     }
 
+    #[getter]
     pub fn polarity(&self) -> Option<u8> {
         match self {
             Event::CD { p, .. } => Some(*p),
@@ -80,6 +74,7 @@ impl Event {
         }
     }
 
+    #[getter]
     pub fn x(&self) -> Option<u16> {
         if let Event::CD { x, .. } = self {
             Some(*x)
@@ -88,11 +83,22 @@ impl Event {
         }
     }
 
+    #[getter]
     pub fn y(&self) -> Option<u16> {
         if let Event::CD { y, .. } = self {
             Some(*y)
         } else {
             None
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match self {
+            Event::CD { x, y, p, t } => format!("Event::CD(x={}, y={}, p={}, t={})", x, y, p, t),
+            Event::ExternalTrigger { id, p } => {
+                format!("Event::ExternalTrigger(id={}, p={})", id, p)
+            }
+            Event::Unknown() => "Event::Unknown".to_string(),
         }
     }
 }
@@ -109,10 +115,11 @@ pub trait EventDecoder {
     fn decode(&mut self, raw_event: &[Self::RawEventType], event_queue: &mut VecDeque<Event>);
 }
 
+#[pyclass]
 pub struct RawFileReader {
     pub header: RawFileHeader,
     path: Box<Path>,
-    event_iterator: Box<dyn Iterator<Item = Event>>,
+    event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync>,
 }
 
 #[derive(Debug)]
@@ -226,6 +233,56 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
     Ok(header)
 }
 
+#[pymethods]
+impl RawFileReader {
+    #[new]
+    pub fn py_new(path: &str) -> PyResult<Self> {
+        let path = Path::new(path);
+        Self::new(path)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))
+    }
+
+    pub fn get_event_iterator(&self) -> PyResult<EventIterator> {
+        let file = File::open(&self.path).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open file: {}", e))
+        })?;
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let _header = parse_header(&mut reader).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Failed to parse header: {}",
+                e
+            ))
+        })?;
+
+        let event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync> =
+            match self.header.event_type {
+                RawEventType::Evt21 => {
+                    let decoder = Evt21Decoder::new();
+                    Box::new(EvtReader::new(reader, decoder))
+                }
+                RawEventType::Evt3 => {
+                    let decoder = Evt3Decoder::new();
+                    Box::new(EvtReader::new(reader, decoder))
+                }
+                _ => {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Unsupported event type",
+                    ))
+                }
+            };
+
+        Ok(EventIterator {
+            inner: event_iterator,
+        })
+    }
+
+    // pub fn read_events_py<'a>(&'a mut self) -> EventIterator {
+    //     EventIterator {
+    //         inter: self.event_iterator,
+    //     }
+    // }
+}
+
 impl RawFileReader {
     pub fn new(path: &Path) -> Result<Self, RawFileReaderError> {
         let file =
@@ -235,7 +292,8 @@ impl RawFileReader {
 
         let header = parse_header(&mut reader)?;
 
-        let event_iterator: Box<dyn Iterator<Item = Event>> = match header.event_type {
+        let event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync> = match header.event_type
+        {
             RawEventType::Evt21 => {
                 let becoder = Evt21Decoder::new();
                 Box::new(EvtReader::new(reader, becoder))
@@ -249,7 +307,7 @@ impl RawFileReader {
 
         Ok(RawFileReader {
             path: path.into(),
-            event_iterator,
+            event_iterator, // Error here, looking for a Send + Sync
             header,
         })
     }
@@ -334,6 +392,31 @@ where
 
         Some(slice)
     })
+}
+
+// Python bindings
+#[pyclass]
+pub struct EventIterator {
+    inner: Box<dyn Iterator<Item = Event> + Send + Sync>,
+}
+
+#[pymethods]
+impl EventIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Event> {
+        slf.inner.next()
+    }
+}
+
+#[pymodule]
+fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Event>()?;
+    m.add_class::<EventIterator>()?;
+    m.add_class::<RawFileReader>()?;
+    Ok(())
 }
 
 // Test module

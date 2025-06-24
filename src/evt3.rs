@@ -196,7 +196,7 @@ impl EventDecoder for Evt3Decoder {
                     });
                 }
                 _ => {
-                    event_queue.push_back(Event::Unknown);
+                    event_queue.push_back(Event::Unknown());
                 }
             }
         });

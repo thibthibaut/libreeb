@@ -109,7 +109,7 @@ impl EventDecoder for Evt21Decoder {
                     p: evt.trigger_value(),
                 }),
                 EVT_NEG | EVT_POS => {}
-                _ => event_queue.push_back(Event::Unknown),
+                _ => event_queue.push_back(Event::Unknown()),
             }
         });
     }
