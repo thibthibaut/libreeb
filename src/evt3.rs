@@ -1,58 +1,18 @@
-use crate::{Event, EventDecoder};
+use crate::{declare_raw_evt, Event, EventDecoder};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 /// Struct for holding raw EVT3 types
-#[derive(FromBytes, Immutable, KnownLayout, Copy, Clone)]
-#[repr(C)]
-pub struct Evt3 {
-    data: u16,
-}
-
-impl Evt3 {
-    // Extract event type (bits 15-12)
-    fn event_type(&self) -> u8 {
-        ((self.data >> 12) & 0xF) as u8
-    }
-
-    // Extract Y coordinate (bits 10-0)
-    fn y(&self) -> u16 {
-        self.data & 0x7FF
-    }
-
-    // Extract X coordinate (bits 10-0)
-    fn x(&self) -> u16 {
-        self.data & 0x7FF
-    }
-
-    // Extract polarity (bit 11)
-    fn pol(&self) -> u8 {
-        ((self.data >> 11) & 0x1) as u8
-    }
-
-    // Extract origin/system_type (bit 11)
-    fn origin(&self) -> u8 {
-        ((self.data >> 11) & 0x1) as u8
-    }
-
-    // Extract time value (bits 11-0)
-    fn time(&self) -> u16 {
-        self.data & 0xFFF
-    }
-
-    // Extract valid bits for vector events (bits 11-0 for VECT_12, bits 7-0 for VECT_8)
-    fn valid(&self) -> u16 {
-        self.data & 0xFFF
-    }
-
-    // Extract trigger ID (bits 11-8)
-    fn trigger_id(&self) -> u8 {
-        ((self.data >> 8) & 0xF) as u8
-    }
-
-    // Extract trigger polarity (bit 0)
-    fn trigger_polarity(&self) -> u8 {
-        (self.data & 0x1) as u8
-    }
+declare_raw_evt! {
+    pub struct Evt3(u16);
+    event_type(u8): 15, 12;
+    y(u16): 10, 0;
+    x(u16): 10, 0;
+    pol(u8): 11, 11;
+    origin(u8): 11, 11;
+    time(u16): 11, 0;
+    valid(u16): 11, 0;
+    trigger_id(u8): 11, 8;
+    trigger_polarity(u8): 0, 0;
 }
 
 // Event types constants
@@ -193,6 +153,7 @@ impl EventDecoder for Evt3Decoder {
                     event_queue.push_back(Event::ExternalTrigger {
                         id: evt.trigger_id(),
                         p: evt.trigger_polarity(),
+                        t: self.time,
                     });
                 }
                 _ => {

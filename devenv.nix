@@ -5,13 +5,13 @@
   env.GREET = "devenv";
 
   # https://devenv.sh/packages/
-  packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost184 pkgs.boost184.dev pkgs.opencv
+  packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost186 pkgs.boost186.dev pkgs.opencv
     pkgs.maturin
   ];
 
-  env.BOOST_ROOT = "${pkgs.boost184.dev}";
-  env.BOOST_INCLUDEDIR = "${pkgs.boost184.dev}/include";
-  env.BOOST_LIBRARYDIR = "${pkgs.boost184}/lib";
+  env.BOOST_ROOT = "${pkgs.boost186.dev}";
+  env.BOOST_INCLUDEDIR = "${pkgs.boost186.dev}/include";
+  env.BOOST_LIBRARYDIR = "${pkgs.boost186}/lib";
 
   # https://devenv.sh/languages/
   languages.rust = {

@@ -1,5 +1,7 @@
 use enum_dispatch::enum_dispatch;
 use evt_reader::EvtReader;
+use facet::Facet;
+use facet_pretty::FacetPretty;
 use pyo3::prelude::*;
 use std::{
     collections::{HashMap, VecDeque},
@@ -13,7 +15,7 @@ use thiserror::Error;
 pub use evt2_1::*;
 pub use evt3::*;
 
-// pub mod evt2;
+pub mod evt2;
 pub mod evt2_1;
 pub mod evt3;
 mod evt_reader;
@@ -47,10 +49,11 @@ pub enum RawFileReaderError {
     Unknown,
 }
 #[pyclass]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Facet, Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
 pub enum Event {
     CD { x: u16, y: u16, p: u8, t: u64 },
-    ExternalTrigger { id: u8, p: u8 },
+    ExternalTrigger { id: u8, p: u8, t: u64 },
     Unknown(),
 }
 
@@ -95,8 +98,8 @@ impl Event {
     fn __repr__(&self) -> String {
         match self {
             Event::CD { x, y, p, t } => format!("Event::CD(x={}, y={}, p={}, t={})", x, y, p, t),
-            Event::ExternalTrigger { id, p } => {
-                format!("Event::ExternalTrigger(id={}, p={})", id, p)
+            Event::ExternalTrigger { id, p, t } => {
+                format!("Event::ExternalTrigger(id={}, p={}, t={})", id, p, t)
             }
             Event::Unknown() => "Event::Unknown".to_string(),
         }
@@ -431,8 +434,8 @@ mod tests {
     {
         let mut hasher = Xxh64::new(0);
         for e in events {
+            // println!("{}", e.pretty());
             if let Event::CD { x, y, p, t } = e {
-                // println!("{},{},{},{}", x, y, p, t);
                 hasher.write_u16(x);
                 hasher.write_u16(y);
                 hasher.write_u8(p);
@@ -461,12 +464,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_evt2_decoder() {
-        let path = Path::new("data/openeb/gen4_evt2_hand.raw");
+        let path = Path::new("data/openeb/blinking_leds.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
         let event_iterator = reader.read_events();
         let hash = compute_hash(event_iterator);
-        assert_eq!(hash, 0xbd1b3ff8ddb1c91b);
+        assert_eq!(hash, 0x7c15d19ed15258fc);
     }
 }
