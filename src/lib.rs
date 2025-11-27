@@ -1,7 +1,6 @@
 use enum_dispatch::enum_dispatch;
 use evt_reader::EvtReader;
 use facet::Facet;
-use facet_pretty::FacetPretty;
 use pyo3::prelude::*;
 use std::{
     collections::{HashMap, VecDeque},
@@ -10,8 +9,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
+
 // Re-export decoders as public
-// pub use evt2::*;
+pub use evt2::*;
 pub use evt2_1::*;
 pub use evt3::*;
 
@@ -216,7 +216,7 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
     }
 
     let event_type = match evt_format_str.as_str() {
-        "2.0" | "EVT2" => Ok(RawEventType::Evt21),
+        "2.0" | "EVT2" => Ok(RawEventType::Evt2),
         "2.1" | "EVT21" => Ok(RawEventType::Evt21),
         "3.0" | "EVT3" => Ok(RawEventType::Evt3),
         "4.0" | "EVT4" => Ok(RawEventType::Evt4),
@@ -297,6 +297,10 @@ impl RawFileReader {
 
         let event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync> = match header.event_type
         {
+            RawEventType::Evt2 => {
+                let becoder = Evt2Decoder::new();
+                Box::new(EvtReader::new(reader, becoder))
+            }
             RawEventType::Evt21 => {
                 let becoder = Evt21Decoder::new();
                 Box::new(EvtReader::new(reader, becoder))
@@ -310,7 +314,7 @@ impl RawFileReader {
 
         Ok(RawFileReader {
             path: path.into(),
-            event_iterator, // Error here, looking for a Send + Sync
+            event_iterator,
             header,
         })
     }
