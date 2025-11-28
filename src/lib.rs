@@ -48,6 +48,7 @@ pub enum RawFileReaderError {
     #[error("An unknown error occurred")]
     Unknown,
 }
+
 #[pyclass]
 #[derive(Facet, Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]

@@ -1,21 +1,20 @@
 use crate::{declare_raw_evt, Event, EventDecoder};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-/// Struct for holding raw EVT3 types
+// Struct for holding raw EVT3 types
 declare_raw_evt! {
     pub struct Evt3(u16);
     event_type(u8): 15, 12;
     y(u16): 10, 0;
     x(u16): 10, 0;
     pol(u8): 11, 11;
-    origin(u8): 11, 11;
+    _origin(u8): 11, 11;
     time(u16): 11, 0;
     valid(u16): 11, 0;
     trigger_id(u8): 11, 8;
     trigger_polarity(u8): 0, 0;
 }
 
-// Event types constants
 const EVT_ADDR_Y: u8 = 0x0;
 const EVT_ADDR_X: u8 = 0x2;
 const VECT_BASE_X: u8 = 0x3;
