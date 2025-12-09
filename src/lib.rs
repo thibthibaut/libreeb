@@ -431,15 +431,17 @@ fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+    use std::fs;
     use std::hash::Hasher;
     use xxhash_rust::xxh64::Xxh64;
+
     fn compute_hash<I>(events: I) -> u64
     where
         I: Iterator<Item = Event>,
     {
         let mut hasher = Xxh64::new(0);
         for e in events {
-            // println!("{}", e.pretty());
             if let Event::CD { x, y, p, t } = e {
                 hasher.write_u16(x);
                 hasher.write_u16(y);
@@ -450,30 +452,33 @@ mod tests {
         hasher.finish()
     }
 
-    #[test]
-    fn test_evt3_decoder() {
-        let path = Path::new("data/gen4_evt3_hand.raw");
-        let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
-        let event_iterator = reader.read_events();
-        let hash = compute_hash(event_iterator);
-        assert_eq!(hash, 0xeb46994708e41cb9);
-    }
+    #[rstest]
+    #[case::evt3(
+        "data/gen4_evt3_hand.raw",
+        "references/gen4_evt3_hand.raw.no_time_shift.xxh"
+    )]
+    #[case::evt21(
+        "data/claque_doigt_evt21.raw",
+        "references/claque_doigt_evt21.raw.no_time_shift.xxh"
+    )]
+    #[case::evt2(
+        "data/blinking_leds.raw",
+        "references/blinking_leds.raw.no_time_shift.xxh"
+    )]
+    fn test_decoder(#[case] raw_path: &str, #[case] ref_path: &str) {
+        let mut reader =
+            RawFileReader::new(Path::new(raw_path)).expect("Failed to open input file");
 
-    #[test]
-    fn test_evt21_decoder() {
-        let path = Path::new("data/claque_doigt_evt21.raw");
-        let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
-        let event_iterator = reader.read_events();
-        let hash = compute_hash(event_iterator);
-        assert_eq!(hash, 0x1bf31f5b25480a8a);
-    }
+        let hash = compute_hash(reader.read_events());
 
-    #[test]
-    fn test_evt2_decoder() {
-        let path = Path::new("data/blinking_leds.raw");
-        let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
-        let event_iterator = reader.read_events();
-        let hash = compute_hash(event_iterator);
-        assert_eq!(hash, 0x7c15d19ed15258fc);
+        let reference_content =
+            fs::read_to_string(ref_path).expect("Failed to read reference file");
+
+        let reference: u64 = reference_content
+            .trim()
+            .parse()
+            .expect("Failed to parse reference hash");
+
+        assert_eq!(hash, reference, "Hash mismatch for {}", raw_path);
     }
 }

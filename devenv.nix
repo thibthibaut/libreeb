@@ -6,7 +6,7 @@
 
   # https://devenv.sh/packages/
   packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost186 pkgs.boost186.dev pkgs.opencv
-    pkgs.maturin
+    pkgs.maturin pkgs.cargo-nextest
   ];
 
   env.BOOST_ROOT = "${pkgs.boost186.dev}";
@@ -33,10 +33,9 @@
   #   echo hello from $GREET
   # '';
 
-  # enterShell = ''
-  #   hello
-  #   git --version
-  # '';
+  enterShell = ''
+    export MV_HAL_PLUGIN_PATH=openeb/build/openeb/lib/metavision/hal/plugins/
+  '';
 
   # https://devenv.sh/tasks/
   # tasks = {

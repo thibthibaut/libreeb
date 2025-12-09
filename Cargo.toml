@@ -22,6 +22,7 @@ zerocopy = { version = "0.8.25", features = ["derive", "simd"] }
 [dev-dependencies]
 xxhash-rust = { version = "0.8.3", features = ["xxh64"] } # For tests
 criterion = { version = "0.5", features = ["html_reports"] } # For benchmakrs
+rstest = "0.26.1"
 
 [[bench]]
 name = "benchmark"

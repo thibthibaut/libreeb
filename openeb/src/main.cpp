@@ -56,19 +56,12 @@ compute_files_hash(const std::vector<std::string> &files,
   return results;
 }
 
-int main() {
-  std::vector<std::string> files = {
-      "../data/openeb/gen4_evt3_hand.raw",
-      "../data/openeb/gen4_evt2_hand.raw",
-      "../data/openeb/claque_doigt_evt21.raw",
-  };
+int main(int argc, char *argv[]) {
 
-  auto results = compute_files_hash(files);
+  bool time_shift = false;
+  auto file_hash = compute_file_hash(argv[1], time_shift);
 
-  for (const auto &[filename, hash] : results) {
-    std::cout << std::format("{} decoding, no time-shifting: hash 0x{:x}\n",
-                             filename, hash);
-  }
+  std::cout << file_hash.second;
 
   return 0;
 }
