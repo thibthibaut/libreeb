@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_evt3_decoder() {
-        let path = Path::new("data/openeb/gen4_evt3_hand.raw");
+        let path = Path::new("data/gen4_evt3_hand.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
         let event_iterator = reader.read_events();
         let hash = compute_hash(event_iterator);
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_evt21_decoder() {
-        let path = Path::new("data/openeb/claque_doigt_evt21.raw");
+        let path = Path::new("data/claque_doigt_evt21.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
         let event_iterator = reader.read_events();
         let hash = compute_hash(event_iterator);
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_evt2_decoder() {
-        let path = Path::new("data/openeb/blinking_leds.raw");
+        let path = Path::new("data/blinking_leds.raw");
         let mut reader = RawFileReader::new(Path::new(&path)).expect("Failed to open test file");
         let event_iterator = reader.read_events();
         let hash = compute_hash(event_iterator);
