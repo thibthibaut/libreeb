@@ -1,4 +1,3 @@
-use enum_dispatch::enum_dispatch;
 use evt_reader::EvtReader;
 use facet::Facet;
 use pyo3::prelude::*;
@@ -42,7 +41,7 @@ pub enum RawFileReaderError {
     #[error("No decoder are implemented for event type: {0:?}")]
     DecoderNotImplemented(RawEventType),
 
-    #[error("Wasn't able to find the event type in file header")]
+    #[error("Unable to find the event type in file header")]
     EventTypeNotFound,
 
     #[error("An unknown error occurred")]
@@ -105,12 +104,6 @@ impl Event {
             Event::Unknown() => "Event::Unknown".to_string(),
         }
     }
-}
-
-#[enum_dispatch(Iterator)]
-pub enum DynamicEvtReader {
-    Evt21(EvtReader<BufReader<File>, Evt21Decoder>),
-    Evt3(EvtReader<BufReader<File>, Evt3Decoder>),
 }
 
 pub trait EventDecoder {
@@ -213,7 +206,6 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
             .first()
             .ok_or(RawFileReaderError::ParseHeaderFailed)?
             .to_string();
-        // TODO: deal with other parts of this ;-separated header
     }
 
     let event_type = match evt_format_str.as_str() {
@@ -279,12 +271,6 @@ impl RawFileReader {
             inner: event_iterator,
         })
     }
-
-    // pub fn read_events_py<'a>(&'a mut self) -> EventIterator {
-    //     EventIterator {
-    //         inter: self.event_iterator,
-    //     }
-    // }
 }
 
 impl RawFileReader {

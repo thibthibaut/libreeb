@@ -1,9 +1,10 @@
 use crate::{Event, EventDecoder};
 use std::{collections::VecDeque, io::Read};
 use zerocopy::FromBytes;
-const READ_BUFFER_SIZE: usize = 512;
+
+const READ_BUFFER_SIZE: usize = 4096;
 const _: () = {
-    assert!(READ_BUFFER_SIZE % 8 == 0);
+    assert!(READ_BUFFER_SIZE.is_multiple_of(8));
 };
 
 #[repr(align(64))]
@@ -36,17 +37,6 @@ impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
             if !self.event_queue.is_empty() {
                 return self.event_queue.pop_front();
             }
-
-            // If the timebase isn't set we need to find  it
-            // if self.time_high.is_none() {
-            //     let mut buffer: [u8; 8] = [0; 8];
-            //     self.reader.read_exact(&mut buffer).unwrap();
-            //     let evt: Evt21Word = bytemuck::cast(buffer);
-            //     if evt.event_type() == EVT_TIME_HIGH {
-            //         self.time_high = Some(evt.time_high());
-            //     }
-            //     continue; // Skip the rest of the loop because we don't have a time high
-            // }
 
             // Try to fill the read buffer
             let bytes_read = self
@@ -82,7 +72,6 @@ impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
             self.read_buffer_cursor = 0;
 
             self.decoder.decode(evts, &mut self.event_queue);
-            // evts.iter().for_each(); // TODO
         } // end loop{
     }
 }

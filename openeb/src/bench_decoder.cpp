@@ -31,8 +31,8 @@ uint64_t benchmark(const std::string &filepath, bool time_shift = false) {
   return total;
 }
 
-int main() {
-  const auto filename = "/home/tvercueil/ws/libreeb/data/openeb/gen4_evt3_hand.raw";
+int main(int argc, char* argv[]) {
+  const auto filename = argv[1];
 
   auto result = benchmark(filename);
 
