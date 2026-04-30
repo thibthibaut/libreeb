@@ -24,7 +24,6 @@ harness = false
 [profile.release]
 codegen-units = 1
 lto = "fat"
-# rustflags = ["-C", "target-cpu=native"]
 panic = "abort"
 # debug = true
 # strip = false
