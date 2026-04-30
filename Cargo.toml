@@ -15,6 +15,7 @@ image = "0.25"
 anyhow = "1"
 rerun = "0.31"
 colorgrad = "0.8"
+rusb = "0.9"
 
 [dev-dependencies]
 xxhash-rust = { version = "0.8.3", features = ["xxh64"] } # For tests
