@@ -19,9 +19,11 @@ pub mod evt2_1;
 pub mod evt3;
 mod evt_reader;
 mod macros;
+pub mod camera;
 pub mod processors;
 pub mod slicer;
 
+pub use camera::CameraReader;
 pub use slicer::{SliceBy, SliceIter};
 
 // Error types
