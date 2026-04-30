@@ -16,6 +16,7 @@ generate_references:
 
 # Build OpenEB
 build_openeb:
+    git submodule update --init
     cmake -S {{justfile_dir()}}/openeb/ -B {{justfile_dir()}}/openeb/build
     cmake --build {{justfile_dir()}}/openeb/build
 
