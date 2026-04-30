@@ -1,6 +1,5 @@
 use crate::declare_raw_evt;
-use crate::{Event, EventDecoder};
-use std::collections::VecDeque;
+use crate::{EventBatch, EventDecoder};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 // EVT2 raw events definition, the layout is:
@@ -29,9 +28,6 @@ const _TIME_LOOP: u64 = _MAX_TIMESTAMP + (1 << NUM_BITS_IN_TIMESTAMP_LSB);
 const CD_OFF: u8 = 0b0000;
 const CD_ON: u8 = 0b0001;
 const EVT_TIME_HIGH: u8 = 0b1000;
-const EXT_TRIGGER: u8 = 0b1010;
-const _OTHERS: u8 = 0b1110;
-const _CONTINUED: u8 = 0b1111;
 
 #[derive(Debug, Default)]
 pub struct Evt2Decoder {
@@ -45,29 +41,18 @@ impl EventDecoder for Evt2Decoder {
         Self::default()
     }
 
-    fn decode(&mut self, raw_event: &[Self::RawEventType], event_queue: &mut VecDeque<Event>) {
+    fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch) {
         raw_event.iter().for_each(|evt| {
             match evt.event_type() {
                 CD_ON | CD_OFF if self.time_high.is_some() => {
                     let full_timestamp = self.time_high.unwrap() | evt.time_low();
-                    event_queue.push_back(Event::CD {
-                        x: evt.x(),
-                        y: evt.y(),
-                        p: evt.event_type(),
-                        t: full_timestamp,
-                    })
+                    batch.push(evt.x(), evt.y(), full_timestamp, evt.event_type());
                 }
                 EVT_TIME_HIGH => {
                     self.time_high = Some(evt.time_high() << NUM_BITS_IN_TIMESTAMP_LSB)
                 }
-                EXT_TRIGGER => event_queue.push_back(Event::ExternalTrigger {
-                    id: evt.trigger_channel_id(),
-                    p: evt.trigger_value(),
-                    t: 0,
-                }),
-                CD_ON | CD_OFF => {}
-                _ => event_queue.push_back(Event::Unknown()),
-            }; // end match type of event
+                _ => {}
+            };
         });
     }
 }

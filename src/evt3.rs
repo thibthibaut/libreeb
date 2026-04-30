@@ -1,4 +1,4 @@
-use crate::{declare_raw_evt, Event, EventDecoder};
+use crate::{declare_raw_evt, EventBatch, EventDecoder};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 // Struct for holding raw EVT3 types
@@ -22,21 +22,15 @@ const VECT_12: u8 = 0x4;
 const VECT_8: u8 = 0x5;
 const EVT_TIME_LOW: u8 = 0x6;
 const EVT_TIME_HIGH: u8 = 0x8;
-const EXT_TRIGGER: u8 = 0xA;
 
 macro_rules! handle_vect {
-    ($state:expr, $events:expr, $valid:expr, $vect_size:expr) => {{
+    ($state:expr, $batch:expr, $valid:expr, $vect_size:expr) => {{
         let end = $state.x + $vect_size;
         let mut valid_bits = $valid;
 
         for i in $state.x..end {
             if valid_bits & 1 == 1 {
-                $events.push_back(Event::CD {
-                    x: i,
-                    y: $state.y,
-                    p: $state.polarity,
-                    t: $state.time,
-                });
+                $batch.push(i, $state.y, $state.time, $state.polarity);
             }
             valid_bits >>= 1;
         }
@@ -74,7 +68,7 @@ impl EventDecoder for Evt3Decoder {
     fn decode(
         &mut self,
         raw_event: &[Self::RawEventType],
-        event_queue: &mut std::collections::VecDeque<Event>,
+        batch: &mut EventBatch,
     ) {
         raw_event.iter().for_each(|evt| {
             // Process the event based on its type
@@ -86,13 +80,7 @@ impl EventDecoder for Evt3Decoder {
                     if self.time_base.is_none() {
                         return;
                     }
-                    // Create Event
-                    event_queue.push_back(Event::CD {
-                        x: evt.x(),
-                        y: self.y,
-                        p: evt.pol(),
-                        t: self.time,
-                    });
+                    batch.push(evt.x(), self.y, self.time, evt.pol());
                 }
                 VECT_BASE_X => {
                     // Update State
@@ -103,15 +91,13 @@ impl EventDecoder for Evt3Decoder {
                     if self.time_base.is_none() {
                         return;
                     }
-                    // Create Event
-                    handle_vect!(self, event_queue, evt.valid(), 12);
+                    handle_vect!(self, batch, evt.valid(), 12);
                 }
                 VECT_8 => {
                     if self.time_base.is_none() {
                         return;
                     }
-                    // Create Event
-                    handle_vect!(self, event_queue, evt.valid(), 8);
+                    handle_vect!(self, batch, evt.valid(), 8);
                 }
                 EVT_TIME_LOW => {
                     let Some(time_base) = self.time_base else {
@@ -135,16 +121,7 @@ impl EventDecoder for Evt3Decoder {
                     self.time_base = Some(new_time_high);
                     self.time = new_time_high;
                 }
-                EXT_TRIGGER => {
-                    event_queue.push_back(Event::ExternalTrigger {
-                        id: evt.trigger_id(),
-                        p: evt.trigger_polarity(),
-                        t: self.time,
-                    });
-                }
-                _ => {
-                    event_queue.push_back(Event::Unknown());
-                }
+                _ => {}
             }
         });
     }

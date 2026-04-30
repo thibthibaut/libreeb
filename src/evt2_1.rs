@@ -1,5 +1,4 @@
-use crate::{declare_raw_evt, Event, EventDecoder};
-use std::collections::VecDeque;
+use crate::{declare_raw_evt, EventBatch, EventDecoder};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 // EVT2.1 raw events definition, the layout is:
@@ -23,8 +22,6 @@ declare_raw_evt! {
 const EVT_NEG: u8 = 0b0000;
 const EVT_POS: u8 = 0b0001;
 const EVT_TIME_HIGH: u8 = 0b1000;
-const EXT_TRIGGER: u8 = 0b1010;
-const _OTHERS: u8 = 0b1110;
 
 #[derive(Default)]
 pub struct Evt21Decoder {
@@ -38,37 +35,24 @@ impl EventDecoder for Evt21Decoder {
         Self::default()
     }
 
-    fn decode(&mut self, raw_event: &[Self::RawEventType], event_queue: &mut VecDeque<Event>) {
+    fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch) {
         raw_event.iter().for_each(|evt| {
             match evt.event_type() {
                 EVT_NEG | EVT_POS if self.time_high.is_some() => {
-                    // Compute the full timestamp
                     let full_timestamp = self.time_high.unwrap() | evt.timestamp();
+                    let p = evt.event_type();
+                    let base_x = evt.x();
+                    let y = evt.y();
                     let mut mask = evt.valid_mask();
                     while mask != 0 {
-                        let offset = mask.trailing_zeros();
+                        let offset = mask.trailing_zeros() as u16;
                         // Clear the lowest set bit
-                        mask = mask & (mask - 1);
-                        event_queue.push_back(Event::CD {
-                            x: evt.x() + offset as u16,
-                            y: evt.y(),
-                            p: evt.event_type(), // Use the event type for the polarity because CD_OFF is 0x0 and CD_ON is 0x1
-                            t: full_timestamp,
-                        });
+                        mask &= mask - 1;
+                        batch.push(base_x + offset, y, full_timestamp, p);
                     }
                 }
                 EVT_TIME_HIGH => self.time_high = Some(evt.time_high() << 6),
-                EXT_TRIGGER if self.time_high.is_some() => {
-                    let full_timestamp = self.time_high.unwrap() | evt.timestamp();
-                    event_queue.push_back(Event::ExternalTrigger {
-                        id: evt.trigger_channel_id(),
-                        p: evt.trigger_value(),
-                        t: full_timestamp,
-                    })
-                }
-                EVT_NEG | EVT_POS => {}
-                EXT_TRIGGER => {}
-                _ => event_queue.push_back(Event::Unknown()),
+                _ => {}
             }
         });
     }
