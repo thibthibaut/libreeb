@@ -2,7 +2,7 @@ use crate::{Event, EventDecoder};
 use std::{collections::VecDeque, io::Read};
 use zerocopy::FromBytes;
 
-const READ_BUFFER_SIZE: usize = 4096;
+const READ_BUFFER_SIZE: usize = 65536;
 const _: () = {
     assert!(READ_BUFFER_SIZE.is_multiple_of(8));
 };
@@ -24,7 +24,7 @@ impl<R: Read, D: EventDecoder> EvtReader<R, D> {
             reader,
             decoder,
             buffer: AlignedBuffer([0; READ_BUFFER_SIZE]),
-            event_queue: VecDeque::<Event>::new(),
+            event_queue: VecDeque::with_capacity(4096),
             read_buffer_cursor: 0,
         }
     }

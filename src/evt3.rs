@@ -122,31 +122,18 @@ impl EventDecoder for Evt3Decoder {
                 }
                 EVT_TIME_HIGH => {
                     let event_time = evt.time() as u64;
-                    let time_base = *self.time_base.get_or_insert(event_time << 12);
+                    let prev_time_base = *self.time_base.get_or_insert(event_time << 12);
                     let mut new_time_high = event_time << 12;
                     new_time_high += self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
 
-                    if (time_base > new_time_high)
-                        && (time_base - new_time_high >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD)
+                    if (prev_time_base > new_time_high)
+                        && (prev_time_base - new_time_high >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD)
                     {
                         new_time_high += TIME_LOOP_DURATION_US;
                         self.time_high_loop_nb += 1;
                     }
                     self.time_base = Some(new_time_high);
-                    self.time = time_base;
-
-                    let event_time = evt.time() as u64;
-                    let mut new_time_high = event_time << 12;
-                    new_time_high += self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
-                    let time_base = self.time_base.unwrap();
-                    if (self.time_base.unwrap() > new_time_high)
-                        && (time_base - new_time_high >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD)
-                    {
-                        new_time_high += TIME_LOOP_DURATION_US;
-                        self.time_high_loop_nb += 1;
-                    }
-                    self.time_base = Some(new_time_high);
-                    self.time = time_base;
+                    self.time = new_time_high;
                 }
                 EXT_TRIGGER => {
                     event_queue.push_back(Event::ExternalTrigger {
