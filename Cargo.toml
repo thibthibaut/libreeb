@@ -11,6 +11,9 @@ itertools = "0.13.0"
 rand = "0.9.1"
 thiserror = "2.0.12"
 zerocopy = { version = "0.8.25", features = ["derive", "simd"] }
+image = "0.25"
+anyhow = "1"
+rerun = "0.31"
 
 [dev-dependencies]
 xxhash-rust = { version = "0.8.3", features = ["xxh64"] } # For tests
