@@ -2,7 +2,7 @@ use evt_reader::EvtReader;
 use facet::Facet;
 use pyo3::prelude::*;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs::File,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
@@ -48,75 +48,107 @@ pub enum RawFileReaderError {
     Unknown,
 }
 
+/// Structure-of-Arrays batch of CD events.
+///
+/// All four vectors are guaranteed to be the same length at all times.
+/// Timestamps (`t`) are non-decreasing within a batch.
 #[pyclass]
-#[derive(Facet, Debug, PartialEq, Eq, Clone, Copy)]
-#[repr(u8)]
-pub enum Event {
-    CD { x: u16, y: u16, p: u8, t: u64 },
-    ExternalTrigger { id: u8, p: u8, t: u64 },
-    Unknown(),
+#[derive(Debug, Clone, Facet)]
+pub struct EventBatch {
+    #[pyo3(get)]
+    pub x: Vec<u16>,
+    #[pyo3(get)]
+    pub y: Vec<u16>,
+    #[pyo3(get)]
+    pub t: Vec<u64>,
+    #[pyo3(get)]
+    pub p: Vec<u8>,
+}
+
+impl EventBatch {
+    pub fn new() -> Self {
+        EventBatch {
+            x: Vec::new(),
+            y: Vec::new(),
+            t: Vec::new(),
+            p: Vec::new(),
+        }
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        EventBatch {
+            x: Vec::with_capacity(n),
+            y: Vec::with_capacity(n),
+            t: Vec::with_capacity(n),
+            p: Vec::with_capacity(n),
+        }
+    }
+
+    #[inline]
+    pub fn push(&mut self, x: u16, y: u16, t: u64, p: u8) {
+        self.x.push(x);
+        self.y.push(y);
+        self.t.push(t);
+        self.p.push(p);
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty()
+    }
+
+    /// Append all events from `other`, consuming it.
+    pub fn append(&mut self, mut other: EventBatch) {
+        self.x.append(&mut other.x);
+        self.y.append(&mut other.y);
+        self.t.append(&mut other.t);
+        self.p.append(&mut other.p);
+    }
+
+    /// Split at `at`: `self` keeps `[0..at]`, returns the `[at..]` tail.
+    pub fn split_off(&mut self, at: usize) -> EventBatch {
+        EventBatch {
+            x: self.x.split_off(at),
+            y: self.y.split_off(at),
+            t: self.t.split_off(at),
+            p: self.p.split_off(at),
+        }
+    }
+}
+
+impl Default for EventBatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[pymethods]
-impl Event {
-    #[getter]
-    pub fn timestamp(&self) -> Option<u64> {
-        if let Event::CD { t, .. } = self {
-            Some(*t)
-        } else {
-            None
-        }
-    }
-
-    #[getter]
-    pub fn polarity(&self) -> Option<u8> {
-        match self {
-            Event::CD { p, .. } => Some(*p),
-            Event::ExternalTrigger { p, .. } => Some(*p),
-            _ => None,
-        }
-    }
-
-    #[getter]
-    pub fn x(&self) -> Option<u16> {
-        if let Event::CD { x, .. } = self {
-            Some(*x)
-        } else {
-            None
-        }
-    }
-
-    #[getter]
-    pub fn y(&self) -> Option<u16> {
-        if let Event::CD { y, .. } = self {
-            Some(*y)
-        } else {
-            None
-        }
+impl EventBatch {
+    fn __len__(&self) -> usize {
+        self.len()
     }
 
     fn __repr__(&self) -> String {
-        match self {
-            Event::CD { x, y, p, t } => format!("Event::CD(x={}, y={}, p={}, t={})", x, y, p, t),
-            Event::ExternalTrigger { id, p, t } => {
-                format!("Event::ExternalTrigger(id={}, p={}, t={})", id, p, t)
-            }
-            Event::Unknown() => "Event::Unknown".to_string(),
-        }
+        format!("EventBatch(len={})", self.len())
     }
 }
 
 pub trait EventDecoder {
     type RawEventType: zerocopy::FromBytes + zerocopy::Immutable + zerocopy::KnownLayout + Copy;
     fn new() -> Self;
-    fn decode(&mut self, raw_event: &[Self::RawEventType], event_queue: &mut VecDeque<Event>);
+    fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch);
 }
 
 #[pyclass]
 pub struct RawFileReader {
     pub header: RawFileHeader,
     path: Box<Path>,
-    event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync>,
+    event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
 #[derive(Debug)]
@@ -250,7 +282,7 @@ impl RawFileReader {
             ))
         })?;
 
-        let event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync> =
+        let event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync> =
             match self.header.event_type {
                 RawEventType::Evt21 => {
                     let decoder = Evt21Decoder::new();
@@ -282,22 +314,22 @@ impl RawFileReader {
 
         let header = parse_header(&mut reader)?;
 
-        let event_iterator: Box<dyn Iterator<Item = Event> + Send + Sync> = match header.event_type
-        {
-            RawEventType::Evt2 => {
-                let becoder = Evt2Decoder::new();
-                Box::new(EvtReader::new(reader, becoder))
-            }
-            RawEventType::Evt21 => {
-                let becoder = Evt21Decoder::new();
-                Box::new(EvtReader::new(reader, becoder))
-            }
-            RawEventType::Evt3 => {
-                let becoder = Evt3Decoder::new();
-                Box::new(EvtReader::new(reader, becoder))
-            }
-            _ => return Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
-        };
+        let event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync> =
+            match header.event_type {
+                RawEventType::Evt2 => {
+                    let decoder = Evt2Decoder::new();
+                    Box::new(EvtReader::new(reader, decoder))
+                }
+                RawEventType::Evt21 => {
+                    let decoder = Evt21Decoder::new();
+                    Box::new(EvtReader::new(reader, decoder))
+                }
+                RawEventType::Evt3 => {
+                    let decoder = Evt3Decoder::new();
+                    Box::new(EvtReader::new(reader, decoder))
+                }
+                _ => return Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
+            };
 
         Ok(RawFileReader {
             path: path.into(),
@@ -306,8 +338,7 @@ impl RawFileReader {
         })
     }
 
-    // TODO: rename this function
-    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = Event> + 'a> {
+    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = EventBatch> + 'a> {
         Box::new(&mut self.event_iterator)
     }
 
@@ -319,6 +350,7 @@ impl RawFileReader {
 }
 
 /// Slice configuration options
+#[derive(Clone, Copy)]
 pub enum SliceBy {
     /// Slice by time in microseconds
     Time(u64),
@@ -328,70 +360,129 @@ pub enum SliceBy {
     Both(u64, usize),
 }
 
-pub fn slice_events<I>(events: I, slice_by: SliceBy) -> impl Iterator<Item = Vec<Event>>
-where
-    I: Iterator<Item = Event>,
-{
-    let mut iter = events.peekable();
+/// Splits a stream of `EventBatch`es into fixed-size slices.
+///
+/// For time-based slicing, binary search on the (sorted) timestamp array is used
+/// to locate the split boundary efficiently.
+pub struct SliceIter<I: Iterator<Item = EventBatch>> {
+    inner: I,
+    /// Leftover events from the previous slice that belong to the next one.
+    overflow: EventBatch,
+    slice_by: SliceBy,
+    done: bool,
+}
 
-    // Estimate capacity
-    let estimated_capacity = match &slice_by {
-        SliceBy::Count(count) => *count,
-        SliceBy::Time(_) => 100_000,
-        SliceBy::Both(_, count) => *count,
-    };
+impl<I: Iterator<Item = EventBatch>> SliceIter<I> {
+    pub fn new(inner: I, slice_by: SliceBy) -> Self {
+        SliceIter {
+            inner,
+            overflow: EventBatch::new(),
+            slice_by,
+            done: false,
+        }
+    }
+}
 
-    std::iter::from_fn(move || {
-        // Find the first event that has a timestamp
-        let first = loop {
-            match iter.next() {
-                Some(e) if e.timestamp().is_some() => break e,
-                Some(_) => continue,
-                None => return None,
+impl<I: Iterator<Item = EventBatch>> Iterator for SliceIter<I> {
+    type Item = EventBatch;
+
+    fn next(&mut self) -> Option<EventBatch> {
+        if self.done {
+            return None;
+        }
+
+        // Start with whatever was left over from the previous slice.
+        let mut acc = std::mem::replace(&mut self.overflow, EventBatch::new());
+
+        match self.slice_by {
+            // ── Count ────────────────────────────────────────────────────────
+            SliceBy::Count(n) => {
+                loop {
+                    if acc.len() >= n {
+                        self.overflow = acc.split_off(n);
+                        return Some(acc);
+                    }
+                    match self.inner.next() {
+                        Some(batch) => acc.append(batch),
+                        None => {
+                            self.done = true;
+                            return if acc.is_empty() { None } else { Some(acc) };
+                        }
+                    }
+                }
             }
-        };
 
-        let first_ts = first.timestamp().unwrap();
+            // ── Time ─────────────────────────────────────────────────────────
+            SliceBy::Time(micros) => {
+                // Ensure we have at least one event to anchor the window.
+                while acc.is_empty() {
+                    match self.inner.next() {
+                        Some(batch) => acc = batch,
+                        None => {
+                            self.done = true;
+                            return None;
+                        }
+                    }
+                }
 
-        let (slice_end_time, max_count) = match slice_by {
-            SliceBy::Time(micros) => (Some(first_ts + micros), None),
-            SliceBy::Count(count) => (None, Some(count)),
-            SliceBy::Both(micros, count) => (Some(first_ts + micros), Some(count)),
-        };
+                let end_t = acc.t[0] + micros;
 
-        let mut slice = Vec::with_capacity(estimated_capacity);
-        slice.push(first);
+                loop {
+                    // Binary search: timestamps are non-decreasing.
+                    let split = acc.t.partition_point(|&t| t < end_t);
+                    if split < acc.len() {
+                        self.overflow = acc.split_off(split);
+                        return Some(acc);
+                    }
+                    match self.inner.next() {
+                        Some(batch) => acc.append(batch),
+                        None => {
+                            self.done = true;
+                            return if acc.is_empty() { None } else { Some(acc) };
+                        }
+                    }
+                }
+            }
 
-        if slice_end_time.is_none() {
-            let count = max_count.unwrap();
-            slice.extend(iter.by_ref().take(count - 1));
-            return Some(slice);
+            // ── Both ─────────────────────────────────────────────────────────
+            SliceBy::Both(micros, n) => {
+                while acc.is_empty() {
+                    match self.inner.next() {
+                        Some(batch) => acc = batch,
+                        None => {
+                            self.done = true;
+                            return None;
+                        }
+                    }
+                }
+
+                let end_t = acc.t[0] + micros;
+
+                loop {
+                    let time_split = acc.t.partition_point(|&t| t < end_t);
+                    // Stop at whichever limit is reached first.
+                    if time_split < acc.len() || acc.len() >= n {
+                        let split = time_split.min(n);
+                        self.overflow = acc.split_off(split);
+                        return Some(acc);
+                    }
+                    match self.inner.next() {
+                        Some(batch) => acc.append(batch),
+                        None => {
+                            self.done = true;
+                            return if acc.is_empty() { None } else { Some(acc) };
+                        }
+                    }
+                }
+            }
         }
-
-        let end_time = slice_end_time.unwrap();
-        if let Some(count) = max_count {
-            slice.extend(
-                iter.by_ref()
-                    .filter(|e| e.timestamp().is_some())
-                    .take_while(|e| e.timestamp().unwrap() < end_time)
-                    .take(count - 1),
-            );
-        } else {
-            slice.extend(
-                iter.by_ref()
-                    .filter(|e| e.timestamp().is_some())
-                    .take_while(|e| e.timestamp().unwrap() < end_time),
-            );
-        }
-
-        Some(slice)
-    })
+    }
 }
 
 // Python bindings
 #[pyclass]
 pub struct EventIterator {
-    inner: Box<dyn Iterator<Item = Event> + Send + Sync>,
+    inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
 #[pymethods]
@@ -400,15 +491,59 @@ impl EventIterator {
         slf
     }
 
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Event> {
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> {
+        slf.inner.next()
+    }
+
+    /// Consume this iterator and return a SliceIterator that yields one EventBatch per
+    /// time window of `micros` microseconds.
+    pub fn slice_by_time(mut slf: PyRefMut<'_, Self>, micros: u64) -> SliceIterator {
+        let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
+        SliceIterator {
+            inner: Box::new(SliceIter::new(inner, SliceBy::Time(micros))),
+        }
+    }
+
+    /// Consume this iterator and return a SliceIterator that yields one EventBatch per
+    /// `count` events.
+    pub fn slice_by_count(mut slf: PyRefMut<'_, Self>, count: usize) -> SliceIterator {
+        let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
+        SliceIterator {
+            inner: Box::new(SliceIter::new(inner, SliceBy::Count(count))),
+        }
+    }
+
+    /// Consume this iterator and return a SliceIterator that yields one EventBatch per
+    /// time window of `micros` microseconds or `count` events, whichever comes first.
+    pub fn slice_by_both(mut slf: PyRefMut<'_, Self>, micros: u64, count: usize) -> SliceIterator {
+        let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
+        SliceIterator {
+            inner: Box::new(SliceIter::new(inner, SliceBy::Both(micros, count))),
+        }
+    }
+}
+
+#[pyclass]
+pub struct SliceIterator {
+    inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
+}
+
+#[pymethods]
+impl SliceIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> {
         slf.inner.next()
     }
 }
 
 #[pymodule]
 fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Event>()?;
+    m.add_class::<EventBatch>()?;
     m.add_class::<EventIterator>()?;
+    m.add_class::<SliceIterator>()?;
     m.add_class::<RawFileReader>()?;
     Ok(())
 }
@@ -422,17 +557,17 @@ mod tests {
     use std::hash::Hasher;
     use xxhash_rust::xxh64::Xxh64;
 
-    fn compute_hash<I>(events: I) -> u64
+    fn compute_hash<I>(batches: I) -> u64
     where
-        I: Iterator<Item = Event>,
+        I: Iterator<Item = EventBatch>,
     {
         let mut hasher = Xxh64::new(0);
-        for e in events {
-            if let Event::CD { x, y, p, t } = e {
-                hasher.write_u16(x);
-                hasher.write_u16(y);
-                hasher.write_u8(p);
-                hasher.write_u64(t);
+        for batch in batches {
+            for i in 0..batch.len() {
+                hasher.write_u16(batch.x[i]);
+                hasher.write_u16(batch.y[i]);
+                hasher.write_u8(batch.p[i]);
+                hasher.write_u64(batch.t[i]);
             }
         }
         hasher.finish()

@@ -1,5 +1,5 @@
-use crate::{Event, EventDecoder};
-use std::{collections::VecDeque, io::Read};
+use crate::{EventBatch, EventDecoder};
+use std::io::Read;
 use zerocopy::FromBytes;
 
 const READ_BUFFER_SIZE: usize = 65536;
@@ -14,7 +14,6 @@ pub struct EvtReader<R: Read, D: EventDecoder> {
     reader: R,
     decoder: D,
     buffer: AlignedBuffer,
-    event_queue: VecDeque<Event>,
     read_buffer_cursor: usize,
 }
 
@@ -24,20 +23,16 @@ impl<R: Read, D: EventDecoder> EvtReader<R, D> {
             reader,
             decoder,
             buffer: AlignedBuffer([0; READ_BUFFER_SIZE]),
-            event_queue: VecDeque::with_capacity(4096),
             read_buffer_cursor: 0,
         }
     }
 }
 
 impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
-    type Item = Event;
+    type Item = EventBatch;
+
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if !self.event_queue.is_empty() {
-                return self.event_queue.pop_front();
-            }
-
             // Try to fill the read buffer
             let bytes_read = self
                 .reader
@@ -52,14 +47,14 @@ impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
             // Update current cursor
             self.read_buffer_cursor += bytes_read;
 
-            // If we didn't fill the buffer we need continue reading
+            // If we didn't fill the buffer we need to continue reading
             if bytes_read > 0 && self.read_buffer_cursor != READ_BUFFER_SIZE {
                 continue;
             }
 
             let word_size = std::mem::size_of::<D::RawEventType>();
 
-            // Compute the size
+            // Compute the usable size (aligned to word boundary)
             let size = self.read_buffer_cursor - (self.read_buffer_cursor % word_size);
 
             let evts = <[D::RawEventType]>::ref_from_bytes_with_elems(
@@ -71,7 +66,13 @@ impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
             // Reset the cursor
             self.read_buffer_cursor = 0;
 
-            self.decoder.decode(evts, &mut self.event_queue);
-        } // end loop{
+            let mut batch = EventBatch::with_capacity(evts.len());
+            self.decoder.decode(evts, &mut batch);
+
+            // A buffer full of TIME_HIGH events produces an empty batch; loop to get more.
+            if !batch.is_empty() {
+                return Some(batch);
+            }
+        }
     }
 }
