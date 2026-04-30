@@ -48,6 +48,128 @@ pub enum RawFileReaderError {
     Unknown,
 }
 
+/// A single decoded Change Detection (CD) event.
+///
+/// CD events are the primary output of an event-based camera: each one records
+/// that a pixel at (`x`, `y`) crossed a log-intensity threshold at time `t`,
+/// with `p = 0` for a negative (falling) edge and `p = 1` for a positive
+/// (rising) edge.
+///
+/// `EventCD` is [`Copy`] because all fields are small scalar types.
+/// It is yielded by value when iterating over an [`EventBatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventCD {
+    /// Column coordinate of the pixel.
+    pub x: u16,
+    /// Row coordinate of the pixel.
+    pub y: u16,
+    /// Timestamp in microseconds.
+    pub t: u64,
+    /// Polarity: `0` = negative (OFF), `1` = positive (ON).
+    pub p: u8,
+}
+
+/// Consuming iterator over the [`EventCD`] events in an [`EventBatch`].
+///
+/// Obtained by calling [`IntoIterator::into_iter`] on an owned `EventBatch`,
+/// i.e. via `for evt in batch { … }`.
+///
+/// The batch is moved into the iterator; no allocation takes place.
+/// Implements [`ExactSizeIterator`] so `.len()` is O(1).
+pub struct EventBatchIter {
+    batch: EventBatch,
+    index: usize,
+}
+
+impl Iterator for EventBatchIter {
+    type Item = EventCD;
+
+    #[inline]
+    fn next(&mut self) -> Option<EventCD> {
+        let i = self.index;
+        if i < self.batch.len() {
+            self.index += 1;
+            Some(EventCD {
+                x: self.batch.x[i],
+                y: self.batch.y[i],
+                t: self.batch.t[i],
+                p: self.batch.p[i],
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.batch.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for EventBatchIter {}
+
+impl IntoIterator for EventBatch {
+    type Item = EventCD;
+    type IntoIter = EventBatchIter;
+
+    /// Consumes the batch and returns an iterator over its [`EventCD`] events.
+    fn into_iter(self) -> EventBatchIter {
+        EventBatchIter { batch: self, index: 0 }
+    }
+}
+
+/// Borrowing iterator over the [`EventCD`] events in an [`EventBatch`].
+///
+/// Obtained by calling [`IntoIterator::into_iter`] on a reference to an
+/// `EventBatch`, i.e. via `for evt in &batch { … }`.
+///
+/// Each event is copied out of the underlying SoA arrays — this is cheap
+/// because [`EventCD`] is only 13 bytes.
+/// Implements [`ExactSizeIterator`] so `.len()` is O(1).
+pub struct EventBatchRefIter<'a> {
+    batch: &'a EventBatch,
+    index: usize,
+}
+
+impl<'a> Iterator for EventBatchRefIter<'a> {
+    type Item = EventCD;
+
+    #[inline]
+    fn next(&mut self) -> Option<EventCD> {
+        let i = self.index;
+        if i < self.batch.len() {
+            self.index += 1;
+            Some(EventCD {
+                x: self.batch.x[i],
+                y: self.batch.y[i],
+                t: self.batch.t[i],
+                p: self.batch.p[i],
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.batch.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a> ExactSizeIterator for EventBatchRefIter<'a> {}
+
+impl<'a> IntoIterator for &'a EventBatch {
+    type Item = EventCD;
+    type IntoIter = EventBatchRefIter<'a>;
+
+    /// Borrows the batch and returns an iterator over its [`EventCD`] events.
+    fn into_iter(self) -> EventBatchRefIter<'a> {
+        EventBatchRefIter { batch: self, index: 0 }
+    }
+}
+
 /// Structure-of-Arrays batch of CD events.
 ///
 /// All four vectors are guaranteed to be the same length at all times.
@@ -550,6 +672,148 @@ fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 // Test module
 #[cfg(test)]
+mod slicer_tests {
+    use super::*;
+    use rstest::rstest;
+
+    /// Count total events in a file (used as a reference for the slicing tests).
+    fn total_events(path: &str) -> usize {
+        let mut reader = RawFileReader::new(Path::new(path)).unwrap();
+        reader.read_events().map(|b| b.len()).sum()
+    }
+
+    // ── SliceBy::Count ───────────────────────────────────────────────────────
+
+    /// Every slice except the last must contain exactly `count` events.
+    /// The sum across all slices must equal the total event count in the file.
+    #[rstest]
+    #[case("data/gen4_evt3_hand.raw", 50_000)]
+    #[case("data/claque_doigt_evt21.raw", 50_000)]
+    #[case("data/blinking_leds.raw", 50_000)]
+    fn slice_by_count(#[case] path: &str, #[case] count: usize) {
+        let total = total_events(path);
+        let mut reader = RawFileReader::new(Path::new(path)).unwrap();
+        let mut slicer = SliceIter::new(reader.read_events(), SliceBy::Count(count));
+
+        let mut sliced_total = 0;
+        let mut prev: Option<EventBatch> = None;
+
+        for slice in &mut slicer {
+            assert!(!slice.is_empty());
+
+            // Every full slice must have exactly `count` events; partial slices
+            // only appear at the very end of the stream.
+            if let Some(p) = prev.replace(slice) {
+                assert_eq!(p.len(), count, "mid-stream slice has wrong length");
+            }
+
+            sliced_total += prev.as_ref().unwrap().len();
+        }
+
+        assert_eq!(sliced_total, total, "event count changed after slicing");
+    }
+
+    // ── SliceBy::Time ────────────────────────────────────────────────────────
+
+    /// Every slice must:
+    /// - be non-empty,
+    /// - have all events within [first_t, first_t + window),
+    /// - have non-decreasing timestamps internally.
+    ///
+    /// Windows are anchored to their first event, so gaps in the event stream
+    /// do not produce empty slices.
+    ///
+    /// The total event count must be preserved.
+    #[rstest]
+    #[case("data/gen4_evt3_hand.raw", 50_000)]
+    #[case("data/claque_doigt_evt21.raw", 50_000)]
+    #[case("data/blinking_leds.raw", 50_000)]
+    fn slice_by_time(#[case] path: &str, #[case] window_us: u64) {
+        let total = total_events(path);
+        let mut reader = RawFileReader::new(Path::new(path)).unwrap();
+        let mut slicer = SliceIter::new(reader.read_events(), SliceBy::Time(window_us));
+
+        let mut sliced_total = 0;
+        let mut prev_last_t: Option<u64> = None;
+
+        for slice in &mut slicer {
+            assert!(!slice.is_empty());
+
+            let first_t = slice.t[0];
+            let last_t = *slice.t.last().unwrap();
+
+            // All events are inside [first_t, first_t + window)
+            assert!(
+                last_t < first_t + window_us,
+                "slice spans {last_t} - {first_t} = {} µs, exceeds window {window_us}",
+                last_t - first_t,
+            );
+
+            // Timestamps are non-decreasing within the slice
+            assert!(
+                slice.t.windows(2).all(|w| w[0] <= w[1]),
+                "timestamps not sorted within slice"
+            );
+
+            // The slice starts no earlier than the previous slice ended
+            if let Some(prev_t) = prev_last_t {
+                assert!(
+                    first_t >= prev_t,
+                    "slice boundary went backwards: {first_t} < {prev_t}"
+                );
+            }
+            prev_last_t = Some(last_t);
+
+            sliced_total += slice.len();
+        }
+
+        assert_eq!(sliced_total, total, "event count changed after time-slicing");
+    }
+
+    // ── SliceBy::Both ────────────────────────────────────────────────────────
+
+    /// Every slice (including the last) must respect both limits simultaneously:
+    /// at most `count` events AND a time span strictly less than `window_us`.
+    ///
+    /// The total event count must be preserved.
+    #[rstest]
+    #[case("data/gen4_evt3_hand.raw", 50_000, 50_000)]
+    #[case("data/claque_doigt_evt21.raw", 50_000, 50_000)]
+    #[case("data/blinking_leds.raw", 50_000, 50_000)]
+    fn slice_by_both(#[case] path: &str, #[case] window_us: u64, #[case] count: usize) {
+        let total = total_events(path);
+        let mut reader = RawFileReader::new(Path::new(path)).unwrap();
+        let mut slicer = SliceIter::new(reader.read_events(), SliceBy::Both(window_us, count));
+
+        let mut sliced_total = 0;
+
+        for slice in &mut slicer {
+            assert!(!slice.is_empty());
+
+            // Count limit
+            assert!(
+                slice.len() <= count,
+                "slice has {} events, exceeds count limit {count}",
+                slice.len()
+            );
+
+            // Time limit
+            let first_t = slice.t[0];
+            let last_t = *slice.t.last().unwrap();
+            assert!(
+                last_t < first_t + window_us,
+                "slice spans {} µs, exceeds window {window_us}",
+                last_t - first_t,
+            );
+
+            sliced_total += slice.len();
+        }
+
+        assert_eq!(sliced_total, total, "event count changed after both-slicing");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rstest::rstest;
@@ -563,11 +827,11 @@ mod tests {
     {
         let mut hasher = Xxh64::new(0);
         for batch in batches {
-            for i in 0..batch.len() {
-                hasher.write_u16(batch.x[i]);
-                hasher.write_u16(batch.y[i]);
-                hasher.write_u8(batch.p[i]);
-                hasher.write_u64(batch.t[i]);
+            for evt in batch {
+                hasher.write_u16(evt.x);
+                hasher.write_u16(evt.y);
+                hasher.write_u8(evt.p);
+                hasher.write_u64(evt.t);
             }
         }
         hasher.finish()
