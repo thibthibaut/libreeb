@@ -19,6 +19,7 @@ rstest = "0.26.1"
 
 [[bench]]
 name = "benchmark"
+panic = "abort"
 harness = false
 
 [profile.release]
