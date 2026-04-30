@@ -19,6 +19,7 @@ pub mod evt2_1;
 pub mod evt3;
 mod evt_reader;
 mod macros;
+pub mod processors;
 
 // Error types
 #[derive(Error, Debug)]
@@ -304,6 +305,8 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
     let mut header_dict: HashMap<String, String> = HashMap::new();
     let mut event_type_string = None;
     let mut event_format_string = None;
+    let mut cam_width: u32 = 0;
+    let mut cam_height: u32 = 0;
 
     loop {
         // Look at the next char without consuming it
@@ -332,7 +335,15 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
                 "evt" => {
                     event_type_string = Some(value.to_string());
                 }
-                "geometry" => {}
+                // Format: "1280x720"
+                "geometry" => {
+                    if let Some((w, h)) = value.trim().split_once('x') {
+                        if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
+                            cam_width = w;
+                            cam_height = h;
+                        }
+                    }
+                }
                 "format" => {
                     event_format_string = Some(value.to_string());
                 }
@@ -360,6 +371,17 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
             .first()
             .ok_or(RawFileReaderError::ParseHeaderFailed)?
             .to_string();
+
+        // Also extract geometry from the semicolon-delimited format string if not yet found
+        if cam_width == 0 {
+            for part in evt_format_str.split(';').skip(1) {
+                if let Some(v) = part.strip_prefix("width=") {
+                    cam_width = v.trim().parse().unwrap_or(0);
+                } else if let Some(v) = part.strip_prefix("height=") {
+                    cam_height = v.trim().parse().unwrap_or(0);
+                }
+            }
+        }
     }
 
     let event_type = match evt_format_str.as_str() {
@@ -376,8 +398,8 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
         header_dict,
         event_type,
         camera_geometry: CameraGeometry {
-            width: 0,
-            height: 0,
+            width: cam_width,
+            height: cam_height,
         },
     };
     Ok(header)

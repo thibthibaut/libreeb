@@ -8,6 +8,7 @@
   packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost186 pkgs.boost186.dev
     (pkgs.opencv.override { enableCuda = false; })
     pkgs.maturin pkgs.cargo-nextest
+    pkgs.rerun
   ];
 
   env.BOOST_ROOT = "${pkgs.boost186.dev}";
