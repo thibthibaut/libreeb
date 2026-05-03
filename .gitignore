@@ -31,5 +31,8 @@ devenv.local.yaml
 # direnv
 .direnv
 
+# dist
+/dist
+
 # pre-commit
 .pre-commit-config.yaml
