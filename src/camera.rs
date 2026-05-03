@@ -51,6 +51,64 @@ static SENSOR_TABLE: &[(u32, SensorSpec)] = &[
 
 const SENSOR_ID_ADDR: u32 = 0x0000_0014;
 
+// ── Bias register table ───────────────────────────────────────────────────────
+
+/// Static descriptor for one sensor bias register.
+///
+/// Values are IMX646-specific.  `rec_min`/`rec_max` are the recommended
+/// offset range from the factory-programmed default (same units and direction
+/// as OpenEB's `Imx646_LL_Biases`).
+pub struct BiasInfo {
+    pub name:    &'static str,
+    pub addr:    u32,
+    pub rec_min: i32,
+    pub rec_max: i32,
+}
+
+/// All six IMX646 bias registers in the order they appear in the register map.
+pub static BIAS_TABLE: &[BiasInfo] = &[
+    BiasInfo { name: "bias_fo",       addr: 0x0000_1004, rec_min: -20, rec_max:   0 },
+    BiasInfo { name: "bias_hpf",      addr: 0x0000_100C, rec_min:   0, rec_max: 120 },
+    BiasInfo { name: "bias_diff_on",  addr: 0x0000_1010, rec_min: -80, rec_max: 145 },
+    BiasInfo { name: "bias_diff",     addr: 0x0000_1014, rec_min: -25, rec_max:  23 },
+    BiasInfo { name: "bias_diff_off", addr: 0x0000_1018, rec_min: -30, rec_max: 200 },
+    BiasInfo { name: "bias_refr",     addr: 0x0000_1020, rec_min: -20, rec_max: 235 },
+];
+
+// ── Camera device listing ─────────────────────────────────────────────────────
+
+/// Identifies one EVK4 found on the USB bus (by enumeration index).
+#[derive(Clone)]
+pub struct CameraDeviceInfo {
+    /// 0-based index among all EVK4 devices found.
+    pub index:   usize,
+    pub bus:     u8,
+    pub address: u8,
+}
+
+/// Return all EVK4 devices currently visible on the USB bus.
+///
+/// Does not open or claim any device; safe to call from the UI thread.
+pub fn list_cameras() -> Vec<CameraDeviceInfo> {
+    let mut result = Vec::new();
+    if let Ok(devices) = rusb::devices() {
+        let mut index = 0usize;
+        for device in devices.iter() {
+            if let Ok(desc) = device.device_descriptor() {
+                if desc.vendor_id() == EVK4_VID && desc.product_id() == EVK4_PID {
+                    result.push(CameraDeviceInfo {
+                        index,
+                        bus:     device.bus_number(),
+                        address: device.address(),
+                    });
+                    index += 1;
+                }
+            }
+        }
+    }
+    result
+}
+
 // ── Register operation definition ────────────────────────────────────────────
 
 /// A single step in an ISSD or sensor-init sequence.
@@ -258,29 +316,38 @@ struct Endpoints {
 /// Drop (or call `stop()`) to gracefully shut down: the camera is returned
 /// to its idle state and the USB interface is released.
 pub struct CameraReader {
-    handle:  DeviceHandle<GlobalContext>,
-    ep:      Endpoints,
-    dev_id:  u32,
-    spec:    &'static SensorSpec,
-    decoder: Evt3Decoder,
-    buf:     Vec<u8>,
-    stopped: bool,
+    handle:        DeviceHandle<GlobalContext>,
+    ep:            Endpoints,
+    dev_id:        u32,
+    spec:          &'static SensorSpec,
+    bias_defaults: Vec<u8>,   // factory idac_ctl for each BIAS_TABLE entry
+    decoder:       Evt3Decoder,
+    buf:           Vec<u8>,
+    stopped:       bool,
 }
 
 impl CameraReader {
-    /// Find the first EVK4 on USB, run the ISSD init sequence, and start
-    /// streaming. Takes ~3–4 seconds due to sensor power-on delays.
+    /// Open the first EVK4 found on USB.  Shorthand for `open_nth(0)`.
     pub fn open() -> Result<Self> {
-        let (handle, ep) = find_and_open()?;
+        Self::open_nth(0)
+    }
+
+    /// Open the n-th EVK4 found on USB (0-based).
+    ///
+    /// Runs the full ISSD init + sensor config sequence (~3–4 s).
+    pub fn open_nth(n: usize) -> Result<Self> {
+        let (handle, ep) = find_and_open_nth(n)?;
         let (dev_id, spec) = find_sensor(&handle, &ep)?;
         eprintln!("camera: {} at Treuzell dev_id={}", spec.name, dev_id);
         let mut cam = CameraReader {
             handle, ep, dev_id, spec,
+            bias_defaults: Vec::new(),
             decoder: Evt3Decoder::new(),
             buf: vec![0u8; BULK_BUF_SIZE],
             stopped: false,
         };
         cam.init()?;
+        cam.load_bias_defaults();
         Ok(cam)
     }
 
@@ -292,6 +359,33 @@ impl CameraReader {
 
     /// Human-readable sensor model name (e.g. `"IMX646"`).
     pub fn sensor_name(&self) -> &str { self.spec.name }
+
+    /// Factory-default `idac_ctl` byte for the bias at `BIAS_TABLE[index]`.
+    ///
+    /// Returns 128 (mid-scale) if the index is out of range or the read failed.
+    pub fn bias_default(&self, index: usize) -> u8 {
+        self.bias_defaults.get(index).copied().unwrap_or(128)
+    }
+
+    /// Read the raw `idac_ctl` byte (bits [7:0]) from a bias register.
+    pub fn read_bias_raw(&self, addr: u32) -> Result<u8> {
+        let val = tz_read_reg(&self.handle, self.ep.ctrl_out, self.ep.ctrl_in,
+                              self.dev_id, addr)?;
+        Ok((val & 0xFF) as u8)
+    }
+
+    /// Apply a bias offset relative to the factory default.
+    ///
+    /// `new_idac = (factory as i32 + offset).clamp(0, 255)`
+    ///
+    /// The register is written with the OpenEB encoding:
+    /// `0x11A1_0000 | new_idac`.
+    pub fn write_bias(&self, addr: u32, factory: u8, offset: i32) -> Result<()> {
+        let new_idac = (factory as i32 + offset).clamp(0, 255) as u32;
+        let encoded = 0x11A1_0000u32 | new_idac;
+        tz_write_reg(&self.handle, self.ep.ctrl_out, self.ep.ctrl_in,
+                     self.dev_id, addr, encoded)
+    }
 
     /// Gracefully stop streaming: stream-off → ISSD stop → ISSD destroy →
     /// release interface. Safe to call multiple times.
@@ -313,6 +407,18 @@ impl CameraReader {
     }
 
     // ── Private ──────────────────────────────────────────────────────────────
+
+    /// Read and cache the factory-programmed idac_ctl for every BIAS_TABLE entry.
+    /// Called once after `init()`.  Failures are non-fatal (defaults to 128).
+    fn load_bias_defaults(&mut self) {
+        self.bias_defaults = BIAS_TABLE.iter().map(|bi| {
+            self.read_bias_raw(bi.addr).unwrap_or_else(|e| {
+                eprintln!("camera: could not read factory default for {} (non-fatal): {}", bi.name, e);
+                128
+            })
+        }).collect();
+        eprintln!("camera: bias factory defaults: {:?}", self.bias_defaults);
+    }
 
     fn init(&mut self) -> Result<()> {
         // Safe stop/reset of any previous state (failures are expected on a
@@ -516,7 +622,8 @@ fn run_seq(
 
 // ── Device discovery ──────────────────────────────────────────────────────────
 
-fn find_and_open() -> Result<(DeviceHandle<GlobalContext>, Endpoints)> {
+fn find_and_open_nth(n: usize) -> Result<(DeviceHandle<GlobalContext>, Endpoints)> {
+    let mut found = 0usize;
     for device in rusb::devices()?.iter() {
         let desc = match device.device_descriptor() {
             Ok(d) => d,
@@ -525,6 +632,11 @@ fn find_and_open() -> Result<(DeviceHandle<GlobalContext>, Endpoints)> {
         if desc.vendor_id() != EVK4_VID || desc.product_id() != EVK4_PID {
             continue;
         }
+        if found < n {
+            found += 1;
+            continue;
+        }
+        // This is the n-th EVK4.
         let handle = device.open()
             .context("Failed to open EVK4 USB device (check udev rules / permissions)")?;
         let config = device.config_descriptor(0)
@@ -533,7 +645,6 @@ fn find_and_open() -> Result<(DeviceHandle<GlobalContext>, Endpoints)> {
             Some(ep) => ep,
             None => bail!("EVK4 found but no Treuzell interface (3 bulk EPs) detected"),
         };
-        // Detach any kernel driver on the Treuzell interface.
         match handle.kernel_driver_active(ep.iface) {
             Ok(true) => {
                 handle.detach_kernel_driver(ep.iface)
@@ -544,7 +655,6 @@ fn find_and_open() -> Result<(DeviceHandle<GlobalContext>, Endpoints)> {
         }
         handle.claim_interface(ep.iface)
             .context("Failed to claim Treuzell interface (camera busy?)")?;
-        // Set alt-setting 0 (quirk: skip on bcdDevice < 3.0.7, but modern EVK4s are fine).
         if let Err(e) = handle.set_alternate_setting(ep.iface, 0) {
             eprintln!("camera: set_alternate_setting skipped (non-fatal): {}", e);
         }
@@ -552,7 +662,7 @@ fn find_and_open() -> Result<(DeviceHandle<GlobalContext>, Endpoints)> {
             ep.iface, ep.ctrl_in, ep.ctrl_out, ep.data_in);
         return Ok((handle, ep));
     }
-    bail!("No EVK4 found (VID={:#06x} PID={:#06x})", EVK4_VID, EVK4_PID)
+    bail!("EVK4 #{} not found (VID={:#06x} PID={:#06x})", n, EVK4_VID, EVK4_PID)
 }
 
 fn find_sensor(

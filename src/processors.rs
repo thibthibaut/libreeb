@@ -1,10 +1,6 @@
 use crate::EventBatch;
 use image::RgbImage;
 
-// colorgrad is available for future custom gradient work.
-#[allow(unused_imports)]
-use colorgrad as _;
-
 const BACKGROUND: [u8; 3] = [10, 10, 10];      // near-black
 const POSITIVE:   [u8; 3] = [255, 140,   0];   // vivid orange  (ON events)
 const NEGATIVE:   [u8; 3] = [  0, 200, 255];   // vivid cyan    (OFF events)
