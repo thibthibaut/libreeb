@@ -61,6 +61,15 @@ impl<I: Iterator<Item = EventBatch>> SliceIter<I> {
     pub fn set_slice_by(&mut self, slice_by: SliceBy) {
         self.slice_by = slice_by;
     }
+
+    /// Mutable reference to the inner iterator.
+    ///
+    /// Useful when the inner iterator carries additional state (e.g.
+    /// [`CameraReader`](crate::camera::CameraReader)) that needs to be
+    /// accessed between slices (e.g. to apply bias changes).
+    pub fn inner_mut(&mut self) -> &mut I {
+        &mut self.inner
+    }
 }
 
 impl<I: Iterator<Item = EventBatch>> Iterator for SliceIter<I> {

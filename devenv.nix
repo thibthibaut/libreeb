@@ -8,7 +8,10 @@
   packages = [ pkgs.git pkgs.cargo-flamegraph pkgs.libusb1 pkgs.boost186 pkgs.boost186.dev
     (pkgs.opencv.override { enableCuda = false; })
     pkgs.maturin pkgs.cargo-nextest
-    pkgs.rerun
+    # WASM build toolchain
+    pkgs.trunk
+    pkgs.wasm-bindgen-cli
+    pkgs.binaryen          # wasm-opt (trunk --release optimisation)
   ];
 
   env.BOOST_ROOT = "${pkgs.boost186.dev}";
@@ -21,6 +24,7 @@
     # https://devenv.sh/reference/options/#languagesrustchannel
     channel = "stable";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer"  ];
+    targets = [ "wasm32-unknown-unknown" ];
   };
 
 

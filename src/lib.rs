@@ -1,13 +1,19 @@
 use evt_reader::EvtReader;
 use facet::Facet;
-use pyo3::prelude::*;
 use std::{
     collections::HashMap,
-    fs::File,
-    io::{self, BufRead, BufReader},
-    path::{Path, PathBuf},
+    io::{self, BufRead, BufReader, Cursor, Read},
 };
 use thiserror::Error;
+
+// pyo3 — native only
+#[cfg(not(target_arch = "wasm32"))]
+use pyo3::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 // Re-export decoders as public
 pub use evt2::*;
@@ -19,16 +25,26 @@ pub mod evt2_1;
 pub mod evt3;
 mod evt_reader;
 mod macros;
-pub mod camera;
 pub mod processors;
 pub mod slicer;
 
+// Camera module: native uses rusb, WASM uses WebUSB
+#[cfg(not(target_arch = "wasm32"))]
+pub mod camera;
+#[cfg(target_arch = "wasm32")]
+pub mod camera_web;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use camera::CameraReader;
+#[cfg(target_arch = "wasm32")]
+pub use camera_web::WasmCameraReader;
+
 pub use slicer::{SliceBy, SliceIter};
 
 // Error types
 #[derive(Error, Debug)]
 pub enum RawFileReaderError {
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("Failed to open file at path {0}")]
     FileOpenError(PathBuf, #[source] io::Error),
 
@@ -58,139 +74,29 @@ pub enum RawFileReaderError {
 ///
 /// CD events are the primary output of an event-based camera: each one records
 /// that a pixel at (`x`, `y`) crossed a log-intensity threshold at time `t`,
-/// with `p = 0` for a negative (falling) edge and `p = 1` for a positive
-/// (rising) edge.
+/// with polarity `p` (1 = brighter, 0 = darker).
 ///
-/// `EventCD` is [`Copy`] because all fields are small scalar types.
-/// It is yielded by value when iterating over an [`EventBatch`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Timestamps are in microseconds relative to the start of the recording.
+#[cfg_attr(not(target_arch = "wasm32"), pyclass)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Facet)]
 pub struct EventCD {
-    /// Column coordinate of the pixel.
     pub x: u16,
-    /// Row coordinate of the pixel.
     pub y: u16,
-    /// Timestamp in microseconds.
-    pub t: u64,
-    /// Polarity: `0` = negative (OFF), `1` = positive (ON).
     pub p: u8,
+    pub t: u64,
 }
 
-/// Consuming iterator over the [`EventCD`] events in an [`EventBatch`].
+/// A batch of [`EventCD`] events in Structure-of-Arrays layout.
 ///
-/// Obtained by calling [`IntoIterator::into_iter`] on an owned `EventBatch`,
-/// i.e. via `for evt in batch { … }`.
-///
-/// The batch is moved into the iterator; no allocation takes place.
-/// Implements [`ExactSizeIterator`] so `.len()` is O(1).
-pub struct EventBatchIter {
-    batch: EventBatch,
-    index: usize,
-}
-
-impl Iterator for EventBatchIter {
-    type Item = EventCD;
-
-    #[inline]
-    fn next(&mut self) -> Option<EventCD> {
-        let i = self.index;
-        if i < self.batch.len() {
-            self.index += 1;
-            Some(EventCD {
-                x: self.batch.x[i],
-                y: self.batch.y[i],
-                t: self.batch.t[i],
-                p: self.batch.p[i],
-            })
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.batch.len() - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for EventBatchIter {}
-
-impl IntoIterator for EventBatch {
-    type Item = EventCD;
-    type IntoIter = EventBatchIter;
-
-    /// Consumes the batch and returns an iterator over its [`EventCD`] events.
-    fn into_iter(self) -> EventBatchIter {
-        EventBatchIter { batch: self, index: 0 }
-    }
-}
-
-/// Borrowing iterator over the [`EventCD`] events in an [`EventBatch`].
-///
-/// Obtained by calling [`IntoIterator::into_iter`] on a reference to an
-/// `EventBatch`, i.e. via `for evt in &batch { … }`.
-///
-/// Each event is copied out of the underlying SoA arrays — this is cheap
-/// because [`EventCD`] is only 13 bytes.
-/// Implements [`ExactSizeIterator`] so `.len()` is O(1).
-pub struct EventBatchRefIter<'a> {
-    batch: &'a EventBatch,
-    index: usize,
-}
-
-impl<'a> Iterator for EventBatchRefIter<'a> {
-    type Item = EventCD;
-
-    #[inline]
-    fn next(&mut self) -> Option<EventCD> {
-        let i = self.index;
-        if i < self.batch.len() {
-            self.index += 1;
-            Some(EventCD {
-                x: self.batch.x[i],
-                y: self.batch.y[i],
-                t: self.batch.t[i],
-                p: self.batch.p[i],
-            })
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.batch.len() - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<'a> ExactSizeIterator for EventBatchRefIter<'a> {}
-
-impl<'a> IntoIterator for &'a EventBatch {
-    type Item = EventCD;
-    type IntoIter = EventBatchRefIter<'a>;
-
-    /// Borrows the batch and returns an iterator over its [`EventCD`] events.
-    fn into_iter(self) -> EventBatchRefIter<'a> {
-        EventBatchRefIter { batch: self, index: 0 }
-    }
-}
-
-/// Structure-of-Arrays batch of CD events.
-///
-/// All four vectors are guaranteed to be the same length at all times.
-/// Timestamps (`t`) are non-decreasing within a batch.
-#[pyclass]
+/// This is the fundamental unit returned by all event iterators.  The four
+/// parallel vectors are always the same length.
+#[cfg_attr(not(target_arch = "wasm32"), pyclass)]
 #[derive(Debug, Clone, Facet)]
 pub struct EventBatch {
-    #[pyo3(get)]
     pub x: Vec<u16>,
-    #[pyo3(get)]
     pub y: Vec<u16>,
-    #[pyo3(get)]
-    pub t: Vec<u64>,
-    #[pyo3(get)]
     pub p: Vec<u8>,
+    pub t: Vec<u64>,
 }
 
 impl EventBatch {
@@ -198,53 +104,94 @@ impl EventBatch {
         EventBatch {
             x: Vec::new(),
             y: Vec::new(),
-            t: Vec::new(),
             p: Vec::new(),
+            t: Vec::new(),
         }
     }
 
-    pub fn with_capacity(n: usize) -> Self {
-        EventBatch {
-            x: Vec::with_capacity(n),
-            y: Vec::with_capacity(n),
-            t: Vec::with_capacity(n),
-            p: Vec::with_capacity(n),
-        }
-    }
-
-    #[inline]
-    pub fn push(&mut self, x: u16, y: u16, t: u64, p: u8) {
-        self.x.push(x);
-        self.y.push(y);
-        self.t.push(t);
-        self.p.push(p);
-    }
-
-    #[inline]
     pub fn len(&self) -> usize {
         self.x.len()
     }
 
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.x.is_empty()
     }
 
-    /// Append all events from `other`, consuming it.
+    pub fn with_capacity(cap: usize) -> Self {
+        EventBatch {
+            x: Vec::with_capacity(cap),
+            y: Vec::with_capacity(cap),
+            p: Vec::with_capacity(cap),
+            t: Vec::with_capacity(cap),
+        }
+    }
+
+    /// Push from separate field values (used by decoders for maximum efficiency).
+    #[inline]
+    pub fn push(&mut self, x: u16, y: u16, t: u64, p: u8) {
+        self.x.push(x);
+        self.y.push(y);
+        self.p.push(p);
+        self.t.push(t);
+    }
+
+    /// Push a single [`EventCD`] (convenience wrapper).
+    #[inline]
+    pub fn push_event(&mut self, evt: EventCD) {
+        self.push(evt.x, evt.y, evt.t, evt.p);
+    }
+
+    /// Append all events from `other` into `self`.
     pub fn append(&mut self, mut other: EventBatch) {
         self.x.append(&mut other.x);
         self.y.append(&mut other.y);
-        self.t.append(&mut other.t);
         self.p.append(&mut other.p);
+        self.t.append(&mut other.t);
     }
 
-    /// Split at `at`: `self` keeps `[0..at]`, returns the `[at..]` tail.
+    /// Split at index `at`.  `self` retains `[0..at)`, returns `[at..)`.
     pub fn split_off(&mut self, at: usize) -> EventBatch {
         EventBatch {
             x: self.x.split_off(at),
             y: self.y.split_off(at),
-            t: self.t.split_off(at),
             p: self.p.split_off(at),
+            t: self.t.split_off(at),
+        }
+    }
+}
+
+pub struct EventBatchIter<'a> {
+    batch: &'a EventBatch,
+    index: usize,
+}
+
+impl<'a> Iterator for EventBatchIter<'a> {
+    type Item = EventCD;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.batch.len() {
+            let i = self.index;
+            self.index += 1;
+            Some(EventCD {
+                x: self.batch.x[i],
+                y: self.batch.y[i],
+                p: self.batch.p[i],
+                t: self.batch.t[i],
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a EventBatch {
+    type Item = EventCD;
+    type IntoIter = EventBatchIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        EventBatchIter {
+            batch: self,
+            index: 0,
         }
     }
 }
@@ -255,6 +202,7 @@ impl Default for EventBatch {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pymethods]
 impl EventBatch {
     fn __len__(&self) -> usize {
@@ -270,13 +218,6 @@ pub trait EventDecoder {
     type RawEventType: zerocopy::FromBytes + zerocopy::Immutable + zerocopy::KnownLayout + Copy;
     fn new() -> Self;
     fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch);
-}
-
-#[pyclass]
-pub struct RawFileReader {
-    pub header: RawFileHeader,
-    path: Box<Path>,
-    event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
 #[derive(Debug)]
@@ -314,33 +255,27 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
     let mut cam_height: u32 = 0;
 
     loop {
-        // Look at the next char without consuming it
         let buffer = reader
             .fill_buf()
-            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?; // TODO: Propagate the error
+            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?;
 
         let next_char = buffer.first().ok_or(RawFileReaderError::ReadBytesFailed)?;
 
         if *next_char != b'%' {
-            // if next char is not a % it's the end of header section
             break;
         }
 
-        // Read the line
         let mut header_line = String::new();
         reader
             .read_line(&mut header_line)
-            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?; // TODO: Propagate the error
+            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?;
 
         let mut parts = header_line.trim_start_matches('%').trim().splitn(2, ' ');
         let key = parts.next().ok_or(RawFileReaderError::ParseHeaderFailed)?;
         let maybe_value = parts.next();
         if let Some(value) = maybe_value {
             match key {
-                "evt" => {
-                    event_type_string = Some(value.to_string());
-                }
-                // Format: "1280x720"
+                "evt" => event_type_string = Some(value.to_string()),
                 "geometry" => {
                     if let Some((w, h)) = value.trim().split_once('x') {
                         if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
@@ -349,27 +284,19 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
                         }
                     }
                 }
-                "format" => {
-                    event_format_string = Some(value.to_string());
-                }
-                "endianness" => {}
+                "format" => event_format_string = Some(value.to_string()),
                 _ => {}
             }
             header_dict.insert(key.to_string(), value.to_string());
         }
     }
 
-    // Find the format
     let mut evt_format_str = match (event_format_string, event_type_string) {
-        (Some(format), Some(_)) => Ok(format),
-        (Some(format), None) => Ok(format),
+        (Some(format), _) => Ok(format),
         (None, Some(evt_type)) => Ok(evt_type),
         (None, None) => Err(RawFileReaderError::EventTypeNotFound),
     }?;
 
-    // For some reason, some header have a different formating where the
-    // format field looks like that: "EVT21;endianness=little;height=320;width=320"
-    // in this case we parse that and it takes precedence over other other fields
     if evt_format_str.contains(";") {
         let parts: Vec<String> = evt_format_str.split(";").map(|x| x.to_owned()).collect();
         evt_format_str = parts
@@ -377,39 +304,138 @@ fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReade
             .ok_or(RawFileReaderError::ParseHeaderFailed)?
             .to_string();
 
-        // Also extract geometry from the semicolon-delimited format string if not yet found
-        if cam_width == 0 {
-            for part in evt_format_str.split(';').skip(1) {
-                if let Some(v) = part.strip_prefix("width=") {
-                    cam_width = v.trim().parse().unwrap_or(0);
-                } else if let Some(v) = part.strip_prefix("height=") {
-                    cam_height = v.trim().parse().unwrap_or(0);
-                }
+        for part in &parts[1..] {
+            if let Some(v) = part.strip_prefix("width=") {
+                cam_width = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = part.strip_prefix("height=") {
+                cam_height = v.trim().parse().unwrap_or(0);
             }
         }
     }
 
-    let event_type = match evt_format_str.as_str() {
-        "2.0" | "EVT2" => Ok(RawEventType::Evt2),
-        "2.1" | "EVT21" => Ok(RawEventType::Evt21),
-        "3.0" | "EVT3" => Ok(RawEventType::Evt3),
-        "4.0" | "EVT4" => Ok(RawEventType::Evt4),
-        unkown_type => Err(RawFileReaderError::UnknownEventType(
-            unkown_type.to_string(),
-        )),
-    }?;
+    let evt_format_normalized = evt_format_str.trim().to_uppercase();
+    let event_type = match evt_format_normalized.as_str() {
+        "EVT2"  | "2.0" => RawEventType::Evt2,
+        "EVT21" | "EVT2.1" | "2.1" => RawEventType::Evt21,
+        "EVT3"  | "3.0" => RawEventType::Evt3,
+        "EVT4"  | "4.0" => RawEventType::Evt4,
+        other   => return Err(RawFileReaderError::UnknownEventType(other.to_string())),
+    };
 
     let header = RawFileHeader {
         header_dict,
         event_type,
-        camera_geometry: CameraGeometry {
-            width: cam_width,
-            height: cam_height,
-        },
+        camera_geometry: CameraGeometry { width: cam_width, height: cam_height },
     };
     Ok(header)
 }
 
+// ── RawFileReader ─────────────────────────────────────────────────────────────
+
+#[cfg_attr(not(target_arch = "wasm32"), pyclass)]
+pub struct RawFileReader {
+    pub header: RawFileHeader,
+    /// Path is only meaningful on native; empty on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
+    path: Box<Path>,
+    event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
+}
+
+fn make_event_iterator<R: Read + Send + Sync + 'static>(
+    reader: BufReader<R>,
+    event_type: RawEventType,
+) -> Result<Box<dyn Iterator<Item = EventBatch> + Send + Sync>, RawFileReaderError> {
+    Ok(match event_type {
+        RawEventType::Evt2  => Box::new(EvtReader::new(reader, Evt2Decoder::new())),
+        RawEventType::Evt21 => Box::new(EvtReader::new(reader, Evt21Decoder::new())),
+        RawEventType::Evt3  => Box::new(EvtReader::new(reader, Evt3Decoder::new())),
+        _                   => return Err(RawFileReaderError::DecoderNotImplemented(event_type)),
+    })
+}
+
+impl RawFileReader {
+    /// Open a `.raw` file from the filesystem (native only).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(path: &Path) -> Result<Self, RawFileReaderError> {
+        let file = File::open(path)
+            .map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let header = parse_header(&mut reader)?;
+        let event_iterator = make_event_iterator(reader, header.event_type)?;
+        Ok(RawFileReader { header, path: path.into(), event_iterator })
+    }
+
+    /// Create a `RawFileReader` from any `Read` source.
+    ///
+    /// On WASM the source is typically a `Cursor<Arc<[u8]>>` built from
+    /// browser file bytes.  On native it can be any reader.
+    pub fn from_reader<R: Read + Send + Sync + 'static>(
+        reader: R,
+    ) -> Result<Self, RawFileReaderError> {
+        let mut buf_reader = BufReader::with_capacity(64 * 1024, reader);
+        let header = parse_header(&mut buf_reader)?;
+        let event_iterator = make_event_iterator(buf_reader, header.event_type)?;
+        Ok(RawFileReader {
+            header,
+            #[cfg(not(target_arch = "wasm32"))]
+            path: std::path::PathBuf::new().into_boxed_path(),
+            event_iterator,
+        })
+    }
+
+    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = EventBatch> + 'a> {
+        Box::new(&mut self.event_iterator)
+    }
+
+    /// Consume the reader, yielding an owned iterator over all event batches.
+    pub fn into_event_iter(self) -> Box<dyn Iterator<Item = EventBatch> + Send + Sync + 'static> {
+        self.event_iterator
+    }
+
+    /// Return true if the geometry in the header was not found (width or height is 0).
+    pub fn needs_geometry_scan(&self) -> bool {
+        self.header.camera_geometry.width == 0 || self.header.camera_geometry.height == 0
+    }
+
+    /// Scan up to `max_batches` event batches to determine geometry from event coordinates.
+    /// Updates `header.camera_geometry` in place.
+    pub fn scan_geometry(&mut self, max_batches: usize) {
+        let mut max_x: u32 = 0;
+        let mut max_y: u32 = 0;
+        let mut seen = 0;
+        // We iterate the inner iterator directly so we can stop early.
+        // NOTE: these events are consumed and lost; call this only when you intend
+        // to recreate the reader afterwards (e.g. on WASM from in-memory bytes).
+        while seen < max_batches {
+            match self.event_iterator.next() {
+                Some(batch) => {
+                    for evt in &batch {
+                        if evt.x as u32 > max_x { max_x = evt.x as u32; }
+                        if evt.y as u32 > max_y { max_y = evt.y as u32; }
+                    }
+                    if !batch.is_empty() { seen += 1; }
+                }
+                None => break,
+            }
+        }
+        if max_x > 0 || max_y > 0 {
+            self.header.camera_geometry.width  = max_x + 1;
+            self.header.camera_geometry.height = max_y + 1;
+        }
+    }
+
+    /// Reset by re-opening the file from disk (native only).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reset(&mut self) {
+        if let Ok(fresh) = Self::new(&self.path) {
+            *self = fresh;
+        }
+    }
+}
+
+// ── Python bindings (native only) ─────────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 #[pymethods]
 impl RawFileReader {
     #[new]
@@ -433,131 +459,60 @@ impl RawFileReader {
 
         let event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync> =
             match self.header.event_type {
-                RawEventType::Evt21 => {
-                    let decoder = Evt21Decoder::new();
-                    Box::new(EvtReader::new(reader, decoder))
-                }
-                RawEventType::Evt3 => {
-                    let decoder = Evt3Decoder::new();
-                    Box::new(EvtReader::new(reader, decoder))
-                }
-                _ => {
-                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        "Unsupported event type",
-                    ))
-                }
+                RawEventType::Evt21 => Box::new(EvtReader::new(reader, Evt21Decoder::new())),
+                RawEventType::Evt3  => Box::new(EvtReader::new(reader, Evt3Decoder::new())),
+                _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "Unsupported event type",
+                )),
             };
 
-        Ok(EventIterator {
-            inner: event_iterator,
-        })
+        Ok(EventIterator { inner: event_iterator })
     }
 }
 
-impl RawFileReader {
-    pub fn new(path: &Path) -> Result<Self, RawFileReaderError> {
-        let file =
-            File::open(path).map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
-
-        let mut reader = BufReader::with_capacity(64 * 1024, file);
-
-        let header = parse_header(&mut reader)?;
-
-        let event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync> =
-            match header.event_type {
-                RawEventType::Evt2 => {
-                    let decoder = Evt2Decoder::new();
-                    Box::new(EvtReader::new(reader, decoder))
-                }
-                RawEventType::Evt21 => {
-                    let decoder = Evt21Decoder::new();
-                    Box::new(EvtReader::new(reader, decoder))
-                }
-                RawEventType::Evt3 => {
-                    let decoder = Evt3Decoder::new();
-                    Box::new(EvtReader::new(reader, decoder))
-                }
-                _ => return Err(RawFileReaderError::DecoderNotImplemented(header.event_type)),
-            };
-
-        Ok(RawFileReader {
-            path: path.into(),
-            event_iterator,
-            header,
-        })
-    }
-
-    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = EventBatch> + 'a> {
-        Box::new(&mut self.event_iterator)
-    }
-
-    /// Resets the file reader
-    pub fn reset(&mut self) {
-        let decoder = Self::new(&self.path).unwrap();
-        *self = decoder;
-    }
-}
-
-// Python bindings
+#[cfg(not(target_arch = "wasm32"))]
 #[pyclass]
 pub struct EventIterator {
     inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pymethods]
 impl EventIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
 
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> {
-        slf.inner.next()
-    }
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> { slf.inner.next() }
 
-    /// Consume this iterator and return a SliceIterator that yields one EventBatch per
-    /// time window of `micros` microseconds.
     pub fn slice_by_time(mut slf: PyRefMut<'_, Self>, micros: u64) -> SliceIterator {
         let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
-        SliceIterator {
-            inner: Box::new(SliceIter::new(inner, SliceBy::Time(micros))),
-        }
+        SliceIterator { inner: Box::new(SliceIter::new(inner, SliceBy::Time(micros))) }
     }
 
-    /// Consume this iterator and return a SliceIterator that yields one EventBatch per
-    /// `count` events.
     pub fn slice_by_count(mut slf: PyRefMut<'_, Self>, count: usize) -> SliceIterator {
         let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
-        SliceIterator {
-            inner: Box::new(SliceIter::new(inner, SliceBy::Count(count))),
-        }
+        SliceIterator { inner: Box::new(SliceIter::new(inner, SliceBy::Count(count))) }
     }
 
-    /// Consume this iterator and return a SliceIterator that yields one EventBatch per
-    /// time window of `micros` microseconds or `count` events, whichever comes first.
     pub fn slice_by_both(mut slf: PyRefMut<'_, Self>, micros: u64, count: usize) -> SliceIterator {
         let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
-        SliceIterator {
-            inner: Box::new(SliceIter::new(inner, SliceBy::Both(micros, count))),
-        }
+        SliceIterator { inner: Box::new(SliceIter::new(inner, SliceBy::Both(micros, count))) }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pyclass]
 pub struct SliceIterator {
     inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pymethods]
 impl SliceIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> {
-        slf.inner.next()
-    }
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> { slf.inner.next() }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pymodule]
 fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EventBatch>()?;
@@ -567,7 +522,8 @@ fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-// Test module
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,7 +538,7 @@ mod tests {
     {
         let mut hasher = Xxh64::new(0);
         for batch in batches {
-            for evt in batch {
+            for evt in &batch {
                 hasher.write_u16(evt.x);
                 hasher.write_u16(evt.y);
                 hasher.write_u8(evt.p);
@@ -593,32 +549,20 @@ mod tests {
     }
 
     #[rstest]
-    #[case::evt3(
-        "data/gen4_evt3_hand.raw",
-        "references/gen4_evt3_hand.raw.no_time_shift.xxh"
-    )]
-    #[case::evt21(
-        "data/claque_doigt_evt21.raw",
-        "references/claque_doigt_evt21.raw.no_time_shift.xxh"
-    )]
-    #[case::evt2(
-        "data/blinking_leds.raw",
-        "references/blinking_leds.raw.no_time_shift.xxh"
-    )]
+    #[case::evt3("data/gen4_evt3_hand.raw",      "references/gen4_evt3_hand.raw.no_time_shift.xxh")]
+    #[case::evt21("data/claque_doigt_evt21.raw", "references/claque_doigt_evt21.raw.no_time_shift.xxh")]
+    #[case::evt2("data/blinking_leds.raw",       "references/blinking_leds.raw.no_time_shift.xxh")]
     fn test_decoder(#[case] raw_path: &str, #[case] ref_path: &str) {
-        let mut reader =
-            RawFileReader::new(Path::new(raw_path)).expect("Failed to open input file");
-
-        let hash = compute_hash(reader.read_events());
-
-        let reference_content =
-            fs::read_to_string(ref_path).expect("Failed to read reference file");
-
-        let reference: u64 = reference_content
-            .trim()
-            .parse()
-            .expect("Failed to parse reference hash");
-
-        assert_eq!(hash, reference, "Hash mismatch for {}", raw_path);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut reader = RawFileReader::new(std::path::Path::new(raw_path))
+                .expect("Failed to open input file");
+            let hash = compute_hash(reader.read_events());
+            let reference_content = fs::read_to_string(ref_path)
+                .expect("Failed to read reference file");
+            let reference: u64 = reference_content.trim().parse()
+                .expect("Failed to parse reference hash");
+            assert_eq!(hash, reference, "Hash mismatch for {}", raw_path);
+        }
     }
 }
