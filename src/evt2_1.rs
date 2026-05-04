@@ -1,5 +1,4 @@
 use crate::{declare_raw_evt, EventBatch, EventDecoder};
-use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 // EVT2.1 raw events definition, the layout is:
 //

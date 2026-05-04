@@ -21,7 +21,6 @@ macro_rules! clog {
 }
 
 use crate::{biases::{BiasGroup, BiasInfo, BIAS_TABLE}, evt3::{Evt3, Evt3Decoder}, EventBatch, EventDecoder};
-use zerocopy::FromBytes;
 
 // ── EVK4 USB constants ────────────────────────────────────────────────────────
 
@@ -490,14 +489,11 @@ impl WasmCameraReader {
         let bytes: Vec<u8> = (0..len).map(|i| data.get_uint8(i)).collect();
         if bytes.is_empty() { return None; }
 
-        // Reinterpret raw bytes as Evt3 (u16) words using zerocopy (zero-copy).
+        // Reinterpret raw bytes as Evt3 (u16) words via bytemuck (zero-copy).
         let word_size  = std::mem::size_of::<Evt3>();
         let word_count = bytes.len() / word_size;
         if word_count == 0 { return None; }
-        let evts = <[Evt3]>::ref_from_bytes_with_elems(
-            &bytes[..word_count * word_size],
-            word_count,
-        ).ok()?;
+        let evts: &[Evt3] = bytemuck::cast_slice(&bytes[..word_count * word_size]);
 
         let mut batch = EventBatch::new();
         self.decoder.decode(evts, &mut batch);

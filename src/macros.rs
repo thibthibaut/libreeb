@@ -4,7 +4,7 @@ macro_rules! declare_raw_evt {
         $vis:vis struct $name:ident($data_ty:ty);
         $($field:ident($ret_ty:ty): $high:literal, $low:literal;)+
     ) => {
-        #[derive(FromBytes, Immutable, KnownLayout, Copy, Clone)]
+        #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone)]
         #[repr(C)]
         $vis struct $name {
             data: $data_ty,
