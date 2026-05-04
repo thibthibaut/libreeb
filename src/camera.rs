@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use rusb::{DeviceHandle, GlobalContext};
 use zerocopy::FromBytes;
 
-use crate::{evt3::Evt3Decoder, EventBatch, EventDecoder};
+use crate::{biases::BIAS_TABLE, evt3::Evt3Decoder, EventBatch, EventDecoder};
 
 // ── Treuzell protocol constants ───────────────────────────────────────────────
 
@@ -50,86 +50,6 @@ static SENSOR_TABLE: &[(u32, SensorSpec)] = &[
 ];
 
 const SENSOR_ID_ADDR: u32 = 0x0000_0014;
-
-// ── Bias register table ───────────────────────────────────────────────────────
-
-/// Static descriptor for one sensor bias register.
-///
-/// Grouping for the bias controls panel.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BiasGroup {
-    /// Low-pass / high-pass pixel filters (bias_fo, bias_hpf).
-    Bandwidth,
-    /// Contrast sensitivity thresholds (bias_diff_on, bias_diff_off, bias_diff).
-    Contrast,
-    /// Refractory period and other advanced controls.
-    Advanced,
-}
-
-/// Per-bias metadata for the IMX646 (EVK4 HD) sensor.
-///
-/// Offsets are relative to the factory-programmed `idac_ctl` register value
-/// (same convention as OpenEB / IMX636 SDK).  Positive and negative directions
-/// are sensor-specific; see `hint` for the intended effect.
-pub struct BiasInfo {
-    pub name:           &'static str,
-    pub addr:           u32,
-    /// Recommended minimum offset (inclusive).
-    pub rec_min:        i32,
-    /// Recommended maximum offset (inclusive).
-    pub rec_max:        i32,
-    /// Sensible less-noisy starting offset (applied on camera open).
-    pub default_offset: i32,
-    pub group:          BiasGroup,
-    /// One-line tooltip shown in the UI.
-    pub hint:           &'static str,
-}
-
-/// All six IMX646 bias registers (Gen4 / IMX636 offset convention).
-///
-/// Direction reference (IMX636 / offset mode):
-///   bias_fo ↑  → wider BW (more high-freq events)
-///   bias_hpf ↑ → stronger HPF (less slow background)
-///   bias_diff_on/off ↑ → higher threshold (less sensitive)
-///   bias_refr ↑ → shorter dead-time (more events per pixel)
-pub static BIAS_TABLE: &[BiasInfo] = &[
-    BiasInfo {
-        name: "bias_fo",       addr: 0x0000_1004,
-        rec_min: -20, rec_max: 0, default_offset: -10,
-        group: BiasGroup::Bandwidth,
-        hint: "Low-pass cut-off. Decrease → narrower BW → less flicker & high-freq noise.",
-    },
-    BiasInfo {
-        name: "bias_hpf",      addr: 0x0000_100C,
-        rec_min: 0, rec_max: 120, default_offset: 10,
-        group: BiasGroup::Bandwidth,
-        hint: "High-pass filter strength. Increase → filter more slow/static background.",
-    },
-    BiasInfo {
-        name: "bias_diff_on",  addr: 0x0000_1010,
-        rec_min: -80, rec_max: 145, default_offset: 20,
-        group: BiasGroup::Contrast,
-        hint: "ON event threshold. Increase → brighter change required before an ON event fires.",
-    },
-    BiasInfo {
-        name: "bias_diff",     addr: 0x0000_1014,
-        rec_min: -25, rec_max: 23, default_offset: 0,
-        group: BiasGroup::Contrast,
-        hint: "Reference contrast level. Prophesee recommends keeping this at 0.",
-    },
-    BiasInfo {
-        name: "bias_diff_off", addr: 0x0000_1018,
-        rec_min: -30, rec_max: 200, default_offset: 20,
-        group: BiasGroup::Contrast,
-        hint: "OFF event threshold. Increase → darker change required before an OFF event fires.",
-    },
-    BiasInfo {
-        name: "bias_refr",     addr: 0x0000_1020,
-        rec_min: -20, rec_max: 235, default_offset: -10,
-        group: BiasGroup::Advanced,
-        hint: "Refractory (dead) period. Decrease → longer pixel dead-time → fewer burst events.",
-    },
-];
 
 // ── Camera device listing ─────────────────────────────────────────────────────
 
@@ -701,13 +621,10 @@ fn find_and_open_nth(n: usize) -> Result<(DeviceHandle<GlobalContext>, Endpoints
             Some(ep) => ep,
             None => bail!("EVK4 found but no Treuzell interface (3 bulk EPs) detected"),
         };
-        match handle.kernel_driver_active(ep.iface) {
-            Ok(true) => {
-                handle.detach_kernel_driver(ep.iface)
-                    .context("Failed to detach kernel driver from Treuzell interface")?;
-                eprintln!("camera: detached kernel driver from interface {}", ep.iface);
-            }
-            _ => {}
+        if let Ok(true) = handle.kernel_driver_active(ep.iface) {
+            handle.detach_kernel_driver(ep.iface)
+                .context("Failed to detach kernel driver from Treuzell interface")?;
+            eprintln!("camera: detached kernel driver from interface {}", ep.iface);
         }
         handle.claim_interface(ep.iface)
             .context("Failed to claim Treuzell interface (camera busy?)")?;

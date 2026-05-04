@@ -10,6 +10,7 @@ macro_rules! declare_raw_evt {
             data: $data_ty,
         }
 
+        #[allow(dead_code)]
         impl $name {
             $(
                 /// Extracts bits $high:$low from the raw data

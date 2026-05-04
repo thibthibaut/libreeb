@@ -1,9 +1,21 @@
-#[derive(Debug)]
-pub enum Endianness {
-    Big,
-    Little,
-}
+//! RAW file header parsing for Prophesee `.raw` files.
+//!
+//! The header is a sequence of `% key value` lines terminated by the first
+//! line that does not start with `%`.  Two keys carry geometry and format
+//! information used by the rest of the library:
+//!
+//! - `geometry` — `<width>x<height>` (may be absent; use `scan_geometry` then)
+//! - `format` / `evt` — event encoding identifier (see [`RawEventType`])
+//!
+//! Some newer files encode width/height inside the `format` value separated
+//! by semicolons: `EVT3;width=1280;height=720`.
 
+use std::collections::HashMap;
+use std::io::BufRead;
+
+use crate::RawFileReaderError;
+
+/// Supported event encoding formats.
 #[derive(Debug, Clone, Copy)]
 pub enum RawEventType {
     Evt2,
@@ -12,90 +24,98 @@ pub enum RawEventType {
     Evt4,
 }
 
+/// Width × height of the sensor in pixels.
 #[derive(Debug)]
 pub struct CameraGeometry {
-    pub width: u32,
+    pub width:  u32,
     pub height: u32,
 }
+
+/// Parsed contents of a `.raw` file header.
 #[derive(Debug)]
 pub struct RawFileHeader {
-    pub header_dict: HashMap<String, String>,
-    pub event_type: RawEventType,
+    /// All key/value pairs found in the header (for display purposes).
+    pub header_dict:     HashMap<String, String>,
+    pub event_type:      RawEventType,
     pub camera_geometry: CameraGeometry,
 }
 
+/// Read and parse the `%`-prefixed header lines from `reader`.
+///
+/// Stops at the first byte that is not `%` (that byte is left unconsumed).
+/// Returns an error if no event format can be determined.
 pub fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReaderError> {
     let mut header_dict: HashMap<String, String> = HashMap::new();
-    let mut event_type_string = None;
-    let mut event_format_string = None;
+    let mut event_type_string:   Option<String> = None;
+    let mut event_format_string: Option<String> = None;
+    let mut cam_width:  u32 = 0;
+    let mut cam_height: u32 = 0;
 
     loop {
-        // Look at the next char without consuming it
-        let buffer = reader
-            .fill_buf()
-            .map_err(|e| RawFileReaderError::ReadBytesFailed)?;
+        let buffer = reader.fill_buf()
+            .map_err(|_| RawFileReaderError::ReadBytesFailed)?;
 
-        let next_char = buffer.first().ok_or(RawFileReaderError::ReadBytesFailed)?;
-
-        if *next_char != b'%' {
-            // if next char is not a % it's the end of header section
-            break;
+        match buffer.first() {
+            None => break,
+            Some(&b) if b != b'%' => break,
+            _ => {}
         }
 
-        // Read the line
-        let mut header_line = String::new();
-        reader
-            .read_line(&mut header_line)
-            .map_err(|e| RawFileReaderError::ReadBytesFailed)?;
+        let mut line = String::new();
+        reader.read_line(&mut line)
+            .map_err(|_| RawFileReaderError::ReadBytesFailed)?;
 
-        let mut parts = header_line.trim_start_matches('%').trim().splitn(2, ' ');
+        let mut parts = line.trim_start_matches('%').trim().splitn(2, ' ');
         let key = parts.next().ok_or(RawFileReaderError::ParseHeaderFailed)?;
-        let maybe_value = parts.next();
-        if let Some(value) = maybe_value {
+        if let Some(value) = parts.next() {
             match key {
-                "evt" => {
-                    event_type_string = Some(value.to_string());
+                "evt"      => event_type_string   = Some(value.to_string()),
+                "format"   => event_format_string = Some(value.to_string()),
+                "geometry" => {
+                    if let Some((w, h)) = value.trim().split_once('x') {
+                        if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
+                            cam_width  = w;
+                            cam_height = h;
+                        }
+                    }
                 }
-                "geometry" => {}
-                "format" => {
-                    event_format_string = Some(value.to_string());
-                }
-                "endianness" => {}
                 _ => {}
             }
             header_dict.insert(key.to_string(), value.to_string());
         }
     }
 
-    // Find the format
-    let evt_format_str = match (event_format_string, event_type_string) {
-        (Some(format), Some(_)) => {
-            Ok(format) // TODO Handle the ugly ;;
-        }
-        (Some(format), None) => {
-            Ok(format) // TODO Handle the ugly ;;
-        }
-        (None, Some(evt_type)) => Ok(evt_type),
-        (None, None) => Err(RawFileReaderError::EventTypeNotFound),
+    // Prefer `format` over the older `evt` key.
+    let mut fmt = match (event_format_string, event_type_string) {
+        (Some(f), _) | (None, Some(f)) => Ok(f),
+        (None, None)                   => Err(RawFileReaderError::EventTypeNotFound),
     }?;
 
-    let event_type = match evt_format_str.as_str() {
-        "2.0" | "EVT2" => Ok(RawEventType::Evt21),
-        "2.1" | "EVT21" => Ok(RawEventType::Evt21),
-        "3.0" | "EVT3" => Ok(RawEventType::Evt3),
-        "4.0" | "EVT4" => Ok(RawEventType::Evt4),
-        unkown_type => Err(RawFileReaderError::UnknownEventType(
-            unkown_type.to_string(),
-        )),
-    }?;
+    // Some files use `EVT3;width=1280;height=720` inside the format field.
+    if fmt.contains(';') {
+        let mut parts = fmt.splitn(2, ';');
+        let base = parts.next().unwrap_or("").to_string();
+        for segment in fmt.splitn(99, ';').skip(1) {
+            if let Some(v) = segment.strip_prefix("width=") {
+                cam_width  = v.trim().parse().unwrap_or(cam_width);
+            } else if let Some(v) = segment.strip_prefix("height=") {
+                cam_height = v.trim().parse().unwrap_or(cam_height);
+            }
+        }
+        fmt = base;
+    }
 
-    let header = RawFileHeader {
+    let event_type = match fmt.trim().to_uppercase().as_str() {
+        "EVT2"  | "2.0"        => RawEventType::Evt2,
+        "EVT21" | "EVT2.1" | "2.1" => RawEventType::Evt21,
+        "EVT3"  | "3.0"        => RawEventType::Evt3,
+        "EVT4"  | "4.0"        => RawEventType::Evt4,
+        other => return Err(RawFileReaderError::UnknownEventType(other.to_string())),
+    };
+
+    Ok(RawFileHeader {
         header_dict,
         event_type,
-        camera_geometry: CameraGeometry {
-            width: 0,
-            height: 0,
-        },
-    };
-    Ok(header)
+        camera_geometry: CameraGeometry { width: cam_width, height: cam_height },
+    })
 }

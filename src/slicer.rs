@@ -81,7 +81,7 @@ impl<I: Iterator<Item = EventBatch>> Iterator for SliceIter<I> {
         }
 
         // Start with whatever was left over from the previous slice.
-        let mut acc = std::mem::replace(&mut self.overflow, EventBatch::new());
+        let mut acc = std::mem::take(&mut self.overflow);
 
         match self.slice_by {
             // ── Count ────────────────────────────────────────────────────────
