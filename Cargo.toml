@@ -10,7 +10,8 @@ color-eyre  = "0.6.3"
 itertools   = "0.13.0"
 rand        = "0.9.1"
 thiserror   = "2.0.12"
-zerocopy    = { version = "0.8.25", features = ["derive", "simd"] }
+bytemuck    = { version = "1", features = ["derive"] }
+wide        = "1.3"
 image       = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 anyhow      = "1"
 serde       = { version = "1", features = ["derive"] }
@@ -80,6 +81,10 @@ harness = false
 codegen-units = 1
 lto           = "fat"
 panic         = "abort"
+
+[profile.bench]
+inherits = "release"
+panic    = "unwind"
 
 # ── Library ───────────────────────────────────────────────────────────────────
 

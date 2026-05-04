@@ -134,6 +134,19 @@ impl EventBatch {
         self.t.push(t);
     }
 
+    /// Bulk-push `n` events from SIMD-extracted arrays, with constant `y` and `t`.
+    ///
+    /// `x_arr` and `p_arr` are `u16` slices (as produced by `wide::u16x8::to_array()`).
+    /// Polarity values in `p_arr` must be 0 or 1 — they are narrowed to `u8` on insert.
+    #[inline]
+    pub fn push_bulk(&mut self, x_arr: &[u16], p_arr: &[u16], y: u16, t: u64, n: usize) {
+        let new_len = self.x.len() + n;
+        self.x.extend_from_slice(&x_arr[..n]);
+        self.y.resize(new_len, y);
+        self.p.extend(p_arr[..n].iter().map(|&v| v as u8));
+        self.t.resize(new_len, t);
+    }
+
     /// Push a single [`EventCD`] (convenience wrapper).
     #[inline]
     pub fn push_event(&mut self, evt: EventCD) {
@@ -214,7 +227,7 @@ impl EventBatch {
 }
 
 pub trait EventDecoder {
-    type RawEventType: zerocopy::FromBytes + zerocopy::Immutable + zerocopy::KnownLayout + Copy;
+    type RawEventType: bytemuck::Pod + Copy;
     fn new() -> Self;
     fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch);
 }

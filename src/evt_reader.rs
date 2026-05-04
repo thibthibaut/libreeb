@@ -1,8 +1,7 @@
 use crate::{EventBatch, EventDecoder};
 use std::io::Read;
-use zerocopy::FromBytes;
 
-const READ_BUFFER_SIZE: usize = 65536;
+const READ_BUFFER_SIZE: usize = 262144;
 const _: () = {
     assert!(READ_BUFFER_SIZE.is_multiple_of(8));
 };
@@ -57,11 +56,7 @@ impl<R: Read, D: EventDecoder> Iterator for EvtReader<R, D> {
             // Compute the usable size (aligned to word boundary)
             let size = self.read_buffer_cursor - (self.read_buffer_cursor % word_size);
 
-            let evts = <[D::RawEventType]>::ref_from_bytes_with_elems(
-                &self.buffer.0[..size],
-                size / word_size,
-            )
-            .unwrap();
+            let evts: &[D::RawEventType] = bytemuck::cast_slice(&self.buffer.0[..size]);
 
             // Reset the cursor
             self.read_buffer_cursor = 0;

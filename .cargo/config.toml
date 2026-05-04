@@ -4,4 +4,4 @@ rustflags = ["-C", "target-cpu=native"]
 # WebUSB (and other unstable web-sys APIs) require this cfg flag.
 # Only applied when cross-compiling for WASM.
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg=web_sys_unstable_apis", "-C", "target-feature=+reference-types"]
+rustflags = ["--cfg=web_sys_unstable_apis", "-C", "target-feature=+reference-types,+simd128"]

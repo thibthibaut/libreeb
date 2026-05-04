@@ -10,8 +10,6 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use rusb::{DeviceHandle, GlobalContext};
-use zerocopy::FromBytes;
-
 use crate::{biases::BIAS_TABLE, evt3::Evt3Decoder, EventBatch, EventDecoder};
 
 // ── Treuzell protocol constants ───────────────────────────────────────────────
@@ -456,10 +454,7 @@ impl Iterator for CameraReader {
             let size = n - (n % word_size);
             if size == 0 { continue; }
 
-            let evts = match <[Evt3]>::ref_from_bytes_with_elems(&self.buf[..size], size / word_size) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
+            let evts: &[Evt3] = bytemuck::cast_slice(&self.buf[..size]);
 
             let mut batch = EventBatch::with_capacity(evts.len() / 4);
             self.decoder.decode(evts, &mut batch);
