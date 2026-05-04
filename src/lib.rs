@@ -1,9 +1,5 @@
 use evt_reader::EvtReader;
-use facet::Facet;
-use std::{
-    collections::HashMap,
-    io::{self, BufRead, BufReader, Cursor, Read},
-};
+use std::io::{self, BufReader, Read};
 use thiserror::Error;
 
 // pyo3 — native only
@@ -20,10 +16,12 @@ pub use evt2::*;
 pub use evt2_1::*;
 pub use evt3::*;
 
+pub mod biases;
 pub mod evt2;
 pub mod evt2_1;
 pub mod evt3;
 mod evt_reader;
+pub mod header;
 mod macros;
 pub mod processors;
 pub mod slicer;
@@ -39,6 +37,7 @@ pub use camera::CameraReader;
 #[cfg(target_arch = "wasm32")]
 pub use camera_web::WasmCameraReader;
 
+pub use header::{CameraGeometry, RawEventType, RawFileHeader};
 pub use slicer::{SliceBy, SliceIter};
 
 // Error types
@@ -78,7 +77,7 @@ pub enum RawFileReaderError {
 ///
 /// Timestamps are in microseconds relative to the start of the recording.
 #[cfg_attr(not(target_arch = "wasm32"), pyclass)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Facet)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventCD {
     pub x: u16,
     pub y: u16,
@@ -91,7 +90,7 @@ pub struct EventCD {
 /// This is the fundamental unit returned by all event iterators.  The four
 /// parallel vectors are always the same length.
 #[cfg_attr(not(target_arch = "wasm32"), pyclass)]
-#[derive(Debug, Clone, Facet)]
+#[derive(Debug, Clone)]
 pub struct EventBatch {
     pub x: Vec<u16>,
     pub y: Vec<u16>,
@@ -220,116 +219,6 @@ pub trait EventDecoder {
     fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch);
 }
 
-#[derive(Debug)]
-pub enum Endianness {
-    Big,
-    Little,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum RawEventType {
-    Evt2,
-    Evt21,
-    Evt3,
-    Evt4,
-}
-
-#[derive(Debug)]
-pub struct CameraGeometry {
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug)]
-pub struct RawFileHeader {
-    pub header_dict: HashMap<String, String>,
-    pub event_type: RawEventType,
-    pub camera_geometry: CameraGeometry,
-}
-
-fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileReaderError> {
-    let mut header_dict: HashMap<String, String> = HashMap::new();
-    let mut event_type_string = None;
-    let mut event_format_string = None;
-    let mut cam_width: u32 = 0;
-    let mut cam_height: u32 = 0;
-
-    loop {
-        let buffer = reader
-            .fill_buf()
-            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?;
-
-        let next_char = buffer.first().ok_or(RawFileReaderError::ReadBytesFailed)?;
-
-        if *next_char != b'%' {
-            break;
-        }
-
-        let mut header_line = String::new();
-        reader
-            .read_line(&mut header_line)
-            .map_err(|_e| RawFileReaderError::ReadBytesFailed)?;
-
-        let mut parts = header_line.trim_start_matches('%').trim().splitn(2, ' ');
-        let key = parts.next().ok_or(RawFileReaderError::ParseHeaderFailed)?;
-        let maybe_value = parts.next();
-        if let Some(value) = maybe_value {
-            match key {
-                "evt" => event_type_string = Some(value.to_string()),
-                "geometry" => {
-                    if let Some((w, h)) = value.trim().split_once('x') {
-                        if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
-                            cam_width = w;
-                            cam_height = h;
-                        }
-                    }
-                }
-                "format" => event_format_string = Some(value.to_string()),
-                _ => {}
-            }
-            header_dict.insert(key.to_string(), value.to_string());
-        }
-    }
-
-    let mut evt_format_str = match (event_format_string, event_type_string) {
-        (Some(format), _) => Ok(format),
-        (None, Some(evt_type)) => Ok(evt_type),
-        (None, None) => Err(RawFileReaderError::EventTypeNotFound),
-    }?;
-
-    if evt_format_str.contains(";") {
-        let parts: Vec<String> = evt_format_str.split(";").map(|x| x.to_owned()).collect();
-        evt_format_str = parts
-            .first()
-            .ok_or(RawFileReaderError::ParseHeaderFailed)?
-            .to_string();
-
-        for part in &parts[1..] {
-            if let Some(v) = part.strip_prefix("width=") {
-                cam_width = v.trim().parse().unwrap_or(0);
-            } else if let Some(v) = part.strip_prefix("height=") {
-                cam_height = v.trim().parse().unwrap_or(0);
-            }
-        }
-    }
-
-    let evt_format_normalized = evt_format_str.trim().to_uppercase();
-    let event_type = match evt_format_normalized.as_str() {
-        "EVT2"  | "2.0" => RawEventType::Evt2,
-        "EVT21" | "EVT2.1" | "2.1" => RawEventType::Evt21,
-        "EVT3"  | "3.0" => RawEventType::Evt3,
-        "EVT4"  | "4.0" => RawEventType::Evt4,
-        other   => return Err(RawFileReaderError::UnknownEventType(other.to_string())),
-    };
-
-    let header = RawFileHeader {
-        header_dict,
-        event_type,
-        camera_geometry: CameraGeometry { width: cam_width, height: cam_height },
-    };
-    Ok(header)
-}
-
 // ── RawFileReader ─────────────────────────────────────────────────────────────
 
 #[cfg_attr(not(target_arch = "wasm32"), pyclass)]
@@ -360,7 +249,7 @@ impl RawFileReader {
         let file = File::open(path)
             .map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
         let mut reader = BufReader::with_capacity(64 * 1024, file);
-        let header = parse_header(&mut reader)?;
+        let header = header::parse_header(&mut reader)?;
         let event_iterator = make_event_iterator(reader, header.event_type)?;
         Ok(RawFileReader { header, path: path.into(), event_iterator })
     }
@@ -373,7 +262,7 @@ impl RawFileReader {
         reader: R,
     ) -> Result<Self, RawFileReaderError> {
         let mut buf_reader = BufReader::with_capacity(64 * 1024, reader);
-        let header = parse_header(&mut buf_reader)?;
+        let header = header::parse_header(&mut buf_reader)?;
         let event_iterator = make_event_iterator(buf_reader, header.event_type)?;
         Ok(RawFileReader {
             header,
@@ -450,7 +339,7 @@ impl RawFileReader {
             PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open file: {}", e))
         })?;
         let mut reader = BufReader::with_capacity(64 * 1024, file);
-        let _header = parse_header(&mut reader).map_err(|e| {
+        let _header = header::parse_header(&mut reader).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                 "Failed to parse header: {}",
                 e

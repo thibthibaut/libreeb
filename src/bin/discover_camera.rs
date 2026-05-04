@@ -12,7 +12,6 @@ use std::time::Duration;
 const EVK4_VID: u16 = 0x04b4;
 const EVK4_PID: u16 = 0x00f5;
 
-const TZ_WRITE_FLAG: u32       = 0x4000_0000;
 const TZ_PROP_DEVICES: u32     = 0x0001_0000;
 const TZ_PROP_DEVICE_REG32: u32 = 0x0001_0102;
 

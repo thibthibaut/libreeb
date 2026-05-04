@@ -1,10 +1,9 @@
 use crate::EventBatch;
 use image::RgbImage;
 
-const BACKGROUND: [u8; 3] = [10, 10, 10];      // near-black
-const POSITIVE:   [u8; 3] = [255, 140,   0];   // vivid orange  (ON events)
-const NEGATIVE:   [u8; 3] = [  0, 200, 255];   // vivid cyan    (OFF events)
-
+const BACKGROUND: [u8; 3] = [30, 30, 46];
+const POSITIVE: [u8; 3] = [245, 194, 231];
+const NEGATIVE: [u8; 3] = [137, 220, 235];
 /// Generates an [`image::RgbImage`] frame from an [`EventBatch`].
 ///
 /// Each pixel is painted with the colour of the **last** event that touched it
@@ -18,7 +17,7 @@ const NEGATIVE:   [u8; 3] = [  0, 200, 255];   // vivid cyan    (OFF events)
 ///
 /// Out-of-bounds events are silently ignored.
 pub struct FrameGenerator {
-    width:  u32,
+    width: u32,
     height: u32,
 }
 
@@ -29,11 +28,7 @@ impl FrameGenerator {
 
     /// Generates an RGB frame from a single [`EventBatch`].
     pub fn generate(&self, batch: &EventBatch) -> RgbImage {
-        let mut img = RgbImage::from_pixel(
-            self.width,
-            self.height,
-            image::Rgb(BACKGROUND),
-        );
+        let mut img = RgbImage::from_pixel(self.width, self.height, image::Rgb(BACKGROUND));
         for evt in batch {
             if (evt.x as u32) < self.width && (evt.y as u32) < self.height {
                 let color = if evt.p != 0 { POSITIVE } else { NEGATIVE };
@@ -102,8 +97,8 @@ mod tests {
     fn out_of_bounds_events_are_ignored() {
         let gen = FrameGenerator::new(10, 10);
         let mut batch = EventBatch::new();
-        batch.push(10,  0,  0, 1);
-        batch.push( 0, 10,  0, 1);
+        batch.push(10, 0, 0, 1);
+        batch.push(0, 10, 0, 1);
         batch.push(200, 200, 0, 1);
         let frame = gen.generate(&batch);
         for pixel in frame.pixels() {

@@ -1,63 +1,26 @@
-use eframe::egui;
-use image::RgbImage;
-use libreeb::{processors::FrameGenerator, RawFileReader, SliceBy, SliceIter};
-use std::sync::Arc;
-
-#[cfg(not(target_arch = "wasm32"))]
-use libreeb::camera::{list_cameras, CameraDeviceInfo, CameraReader, BiasGroup, BIAS_TABLE};
-
-#[cfg(not(target_arch = "wasm32"))]
-use {
-    std::path::PathBuf,
-    std::sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Mutex,
-    },
-    std::thread,
-};
+// event_viewer is a WASM-only binary served via trunk.
+// For native builds only a stub main is compiled so `cargo check` succeeds.
 
 #[cfg(target_arch = "wasm32")]
-use {libreeb::camera_web::{BiasGroup, BIAS_TABLE}, wasm_bindgen_futures::spawn_local};
+use eframe::egui;
+#[cfg(target_arch = "wasm32")]
+use image::RgbImage;
+#[cfg(target_arch = "wasm32")]
+use libreeb::{biases::{BiasGroup, BIAS_TABLE}, processors::FrameGenerator, RawFileReader, SliceBy, SliceIter};
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
 
 // ── Producer trait ────────────────────────────────────────────────────────────
 
+#[cfg(target_arch = "wasm32")]
 trait Producer: Send + 'static {
     /// Returns (frame, event_count, event_rate_ev_per_s) for the latest slice.
     fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64)>;
     fn set_slice(&mut self, slice: SliceBy);
     fn apply_biases(&mut self, biases: Vec<(usize, u8, i32)>);
     fn stop(&mut self);
-}
-
-// ── Native producer ───────────────────────────────────────────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-enum ProducerCmd {
-    SetSliceBy(SliceBy),
-    ApplyBiases(Vec<(usize, u8, i32)>),
-    Stop,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct NativeProducer {
-    frame_rx:  mpsc::Receiver<(RgbImage, usize, f64)>,
-    cmd_tx:    mpsc::Sender<ProducerCmd>,
-    stop_flag: Arc<AtomicBool>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Producer for NativeProducer {
-    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64)> {
-        let mut latest = None;
-        while let Ok(item) = self.frame_rx.try_recv() { latest = Some(item); }
-        latest
-    }
-    fn set_slice(&mut self, s: SliceBy) { let _ = self.cmd_tx.send(ProducerCmd::SetSliceBy(s)); }
-    fn apply_biases(&mut self, b: Vec<(usize, u8, i32)>) { let _ = self.cmd_tx.send(ProducerCmd::ApplyBiases(b)); }
-    fn stop(&mut self) {
-        self.stop_flag.store(true, Ordering::Relaxed);
-        let _ = self.cmd_tx.send(ProducerCmd::Stop);
-    }
 }
 
 // ── WASM file producer (poll-based, no background task) ──────────────────────
@@ -160,6 +123,7 @@ impl Producer for WasmCameraProducer {
 
 // ── Shared viewer state ───────────────────────────────────────────────────────
 
+#[cfg(target_arch = "wasm32")]
 struct ViewerState {
     width:         u32,
     height:        u32,
@@ -178,6 +142,7 @@ struct ViewerState {
 }
 
 /// Async init result slot.
+#[cfg(target_arch = "wasm32")]
 type InitSlot = Arc<std::sync::Mutex<Option<Result<ViewerState, String>>>>;
 
 // ── WASM App ──────────────────────────────────────────────────────────────────
@@ -430,292 +395,6 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
         texture: None, frame_count: 0,
         window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
         is_camera: true,
-        bias_offsets,  // computed above from default_offset
-        bias_defaults,
-    })
-}
-
-// ── Native App ────────────────────────────────────────────────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-enum NativeState {
-    Selection { cameras: Vec<CameraDeviceInfo> },
-    Opening   { label: String, is_camera: bool, init: InitSlot },
-    Viewing   (ViewerState),
-    Error     (String),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct EventViewerApp { state: NativeState }
-
-#[cfg(not(target_arch = "wasm32"))]
-impl EventViewerApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        EventViewerApp { state: NativeState::Selection { cameras: list_cameras() } }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl eframe::App for EventViewerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint();
-        let old = std::mem::replace(&mut self.state, NativeState::Selection { cameras: vec![] });
-        self.state = self.process(ctx, old);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl EventViewerApp {
-    fn process(&mut self, ctx: &egui::Context, state: NativeState) -> NativeState {
-        match state {
-            NativeState::Selection { cameras } => {
-                let mut next = None;
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.add_space(40.0);
-                    ui.vertical_centered(|ui| {
-                        ui.heading("libreeb Event Viewer");
-                        ui.add_space(20.0);
-                        if ui.button("  Open RAW file…  ").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("RAW event files", &["raw"])
-                                .pick_file()
-                            {
-                                next = Some(self.start_open_file(path));
-                            }
-                        }
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        ui.label("USB Cameras:");
-                        if cameras.is_empty() {
-                            ui.label("(none detected)");
-                        } else {
-                            for cam in &cameras {
-                                if ui.button(format!(
-                                    "  EVK4 #{} — bus {}, addr {}  ",
-                                    cam.index, cam.bus, cam.address
-                                )).clicked() {
-                                    next = Some(self.start_open_camera(cam.index));
-                                }
-                            }
-                        }
-                        ui.add_space(6.0);
-                        if ui.small_button("Refresh").clicked() {
-                            next = Some(NativeState::Selection { cameras: list_cameras() });
-                        }
-                    });
-                });
-                next.unwrap_or(NativeState::Selection { cameras })
-            }
-
-            NativeState::Opening { label, is_camera, init } => {
-                let mut cancel = false;
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(60.0);
-                        ui.heading("Opening…");
-                        ui.add_space(8.0);
-                        ui.label(&label);
-                        if is_camera { ui.add_space(4.0); ui.label("Initialising sensor (~3 s)"); }
-                        ui.add_space(16.0);
-                        if ui.button("Cancel").clicked() { cancel = true; }
-                    });
-                });
-                if cancel { return NativeState::Selection { cameras: list_cameras() }; }
-                match init.lock().ok().and_then(|mut g| g.take()) {
-                    Some(Ok(vs))  => NativeState::Viewing(vs),
-                    Some(Err(e))  => NativeState::Error(e),
-                    None          => NativeState::Opening { label, is_camera, init },
-                }
-            }
-
-             NativeState::Viewing(mut v) => {
-                 if let Some((img, n, rate)) = v.producer.poll_frame() {
-                     upload_frame(ctx, &mut v, img, n, rate);
-                 }
-                 let mut close = false;
-                 let mut slice_changed = false;
-                 let mut bias_changed  = false;
-                 show_info_panel(ctx, &mut v, &mut close, &mut slice_changed, &mut bias_changed);
-                 show_canvas(ctx, &v);
-                 if close {
-                     v.producer.stop();
-                     return NativeState::Selection { cameras: list_cameras() };
-                 }
-                 if slice_changed { v.producer.set_slice(SliceBy::Time(v.window_us as u64)); }
-                 if bias_changed {
-                     let biases = v.bias_defaults.iter().enumerate()
-                         .map(|(i, &factory)| (i, factory, v.bias_offsets[i]))
-                         .collect();
-                     v.producer.apply_biases(biases);
-                 }
-                 NativeState::Viewing(v)
-             }
-
-            NativeState::Error(msg) => {
-                let mut back = false;
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(60.0);
-                        ui.label(egui::RichText::new("Error").color(egui::Color32::RED).heading());
-                        ui.add_space(8.0);
-                        ui.label(&msg);
-                        ui.add_space(16.0);
-                        if ui.button("Back").clicked() { back = true; }
-                    });
-                });
-                if back { NativeState::Selection { cameras: list_cameras() } }
-                else    { NativeState::Error(msg) }
-            }
-        }
-    }
-
-    fn start_open_file(&self, path: PathBuf) -> NativeState {
-        let label = path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
-        let init: InitSlot = Arc::new(std::sync::Mutex::new(None));
-        let init2 = Arc::clone(&init);
-        thread::spawn(move || { *init2.lock().unwrap() = Some(open_file_native(path)); });
-        NativeState::Opening { label, is_camera: false, init }
-    }
-
-    fn start_open_camera(&self, index: usize) -> NativeState {
-        let label = format!("EVK4 #{index}");
-        let init: InitSlot = Arc::new(std::sync::Mutex::new(None));
-        let init2 = Arc::clone(&init);
-        thread::spawn(move || { *init2.lock().unwrap() = Some(open_camera_native(index)); });
-        NativeState::Opening { label, is_camera: true, init }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn open_file_native(path: PathBuf) -> Result<ViewerState, String> {
-    let mut reader = RawFileReader::new(&path).map_err(|e| e.to_string())?;
-    if reader.needs_geometry_scan() { reader.scan_geometry(8); }
-    let width  = reader.header.camera_geometry.width.max(1);
-    let height = reader.header.camera_geometry.height.max(1);
-    let label  = path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    let mut header_info: Vec<(String, String)> = reader.header.header_dict
-        .iter().map(|(k, v)| (k.clone(), v.trim().to_string())).collect();
-    header_info.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let (frame_tx, frame_rx) = mpsc::sync_channel::<(RgbImage, usize, f64)>(2);
-    let (cmd_tx,   cmd_rx)   = mpsc::channel::<ProducerCmd>();
-    let stop_flag  = Arc::new(AtomicBool::new(false));
-    let stop_clone = Arc::clone(&stop_flag);
-    let slice      = SliceBy::Time(33_333);
-
-    thread::spawn(move || {
-        let generator = FrameGenerator::new(width, height);
-        let mut cur_slice = slice;
-        'outer: loop {
-            if stop_clone.load(Ordering::Relaxed) { break; }
-            let mut r = match RawFileReader::new(&path) { Ok(r) => r, Err(_) => break };
-            let mut iter = SliceIter::new(r.read_events(), cur_slice);
-            loop {
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    match cmd {
-                        ProducerCmd::SetSliceBy(s) => { cur_slice = s; iter.set_slice_by(s); }
-                        ProducerCmd::Stop            => break 'outer,
-                        ProducerCmd::ApplyBiases(_)  => {}
-                    }
-                }
-                if stop_clone.load(Ordering::Relaxed) { break 'outer; }
-                match iter.next() {
-                    Some(b) if !b.t.is_empty() => {
-                        let n = b.len();
-                        let dt = b.t.last().unwrap().saturating_sub(b.t[0]);
-                        let rate = if dt > 0 { n as f64 / (dt as f64 * 1e-6) } else { 0.0 };
-                        if frame_tx.send((generator.generate(&b), n, rate)).is_err() { break 'outer; }
-                    }
-                    Some(_) => continue,
-                    None    => break,
-                }
-            }
-        }
-    });
-
-    Ok(ViewerState {
-        width, height, label, header_info,
-        producer: Box::new(NativeProducer { frame_rx, cmd_tx, stop_flag }),
-        texture: None, frame_count: 0,
-        window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
-        is_camera: false, bias_defaults: vec![], bias_offsets: vec![],
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn open_camera_native(index: usize) -> Result<ViewerState, String> {
-    let camera = CameraReader::open_nth(index).map_err(|e| e.to_string())?;
-    let width  = camera.width();
-    let height = camera.height();
-    let label  = format!("EVK4 #{index} — {}", camera.sensor_name());
-    // Collect factory defaults before camera is moved into the thread.
-    let bias_defaults: Vec<u8> = (0..BIAS_TABLE.len()).map(|i| camera.bias_default(i)).collect();
-    // Less-noisy starting offsets (applied in the thread before the loop).
-    let bias_offsets: Vec<i32> = BIAS_TABLE.iter().map(|bi| bi.default_offset).collect();
-    let initial_biases: Vec<(usize, u8, i32)> = bias_defaults.iter().enumerate()
-        .filter(|(i, _)| BIAS_TABLE[*i].default_offset != 0)
-        .map(|(i, &factory)| (i, factory, BIAS_TABLE[i].default_offset))
-        .collect();
-
-    let (frame_tx, frame_rx) = mpsc::sync_channel::<(RgbImage, usize, f64)>(2);
-    let (cmd_tx,   cmd_rx)   = mpsc::channel::<ProducerCmd>();
-    let stop_flag  = Arc::new(AtomicBool::new(false));
-    let stop_clone = Arc::clone(&stop_flag);
-    let slice      = SliceBy::Time(33_333);
-
-    thread::spawn(move || {
-        let generator = FrameGenerator::new(width, height);
-        // Apply less-noisy default offsets before streaming starts.
-        let mut camera = camera;
-        for (idx, factory, offset) in initial_biases {
-            let addr = BIAS_TABLE[idx].addr;
-            if let Err(e) = camera.write_bias(addr, factory, offset) {
-                eprintln!("bias init {}: {e}", BIAS_TABLE[idx].name);
-            }
-        }
-        let mut iter = SliceIter::new(camera, slice);
-        loop {
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    ProducerCmd::SetSliceBy(s)      => iter.set_slice_by(s),
-                    ProducerCmd::ApplyBiases(biases) => {
-                        for (idx, factory, offset) in biases {
-                            let addr = BIAS_TABLE[idx].addr;
-                            if let Err(e) = iter.inner_mut().write_bias(addr, factory, offset) {
-                                eprintln!("bias error: {e}");
-                            }
-                        }
-                    }
-                    ProducerCmd::Stop => { iter.inner_mut().stop(); return; }
-                }
-            }
-            if stop_clone.load(Ordering::Relaxed) { iter.inner_mut().stop(); return; }
-            match iter.next() {
-                Some(b) if !b.t.is_empty() => {
-                    let n = b.len();
-                    let dt = b.t.last().unwrap().saturating_sub(b.t[0]);
-                    let rate = if dt > 0 { n as f64 / (dt as f64 * 1e-6) } else { 0.0 };
-                    if frame_tx.send((generator.generate(&b), n, rate)).is_err() {
-                        iter.inner_mut().stop(); return;
-                    }
-                }
-                Some(_) => continue,
-                None    => { iter.inner_mut().stop(); return; }
-            }
-        }
-    });
-
-    Ok(ViewerState {
-        width, height, label, header_info: vec![],
-        producer: Box::new(NativeProducer { frame_rx, cmd_tx, stop_flag }),
-        texture: None, frame_count: 0,
-        window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
-        is_camera: true,
         bias_offsets,
         bias_defaults,
     })
@@ -723,6 +402,7 @@ fn open_camera_native(index: usize) -> Result<ViewerState, String> {
 
 // ── Shared UI helpers ─────────────────────────────────────────────────────────
 
+#[cfg(target_arch = "wasm32")]
 fn upload_frame(
     ctx: &egui::Context,
     v: &mut ViewerState,
@@ -743,6 +423,7 @@ fn upload_frame(
     v.last_rate     = rate;
 }
 
+#[cfg(target_arch = "wasm32")]
 fn show_info_panel(
     ctx: &egui::Context,
     v: &mut ViewerState,
@@ -858,6 +539,7 @@ fn show_info_panel(
     });
 }
 
+#[cfg(target_arch = "wasm32")]
 fn show_canvas(ctx: &egui::Context, v: &ViewerState) {
     egui::CentralPanel::default().show(ctx, |ui| {
         if let Some(tex) = &v.texture {
@@ -878,17 +560,8 @@ fn show_canvas(ctx: &egui::Context, v: &ViewerState) {
 // ── Entry points ──────────────────────────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result {
-    eframe::run_native(
-        "libreeb Event Viewer",
-        eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_title("libreeb Event Viewer")
-                .with_inner_size([1280.0, 760.0]),
-            ..Default::default()
-        },
-        Box::new(|cc| Ok(Box::new(EventViewerApp::new(cc)))),
-    )
+fn main() {
+    eprintln!("event_viewer is a WASM-only binary. Use `trunk serve` / `trunk build`.");
 }
 
 #[cfg(target_arch = "wasm32")]
