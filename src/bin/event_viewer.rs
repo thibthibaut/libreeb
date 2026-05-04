@@ -4,7 +4,7 @@ use libreeb::{processors::FrameGenerator, RawFileReader, SliceBy, SliceIter};
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use libreeb::camera::{list_cameras, CameraDeviceInfo, CameraReader, BIAS_TABLE};
+use libreeb::camera::{list_cameras, CameraDeviceInfo, CameraReader, BiasGroup, BIAS_TABLE};
 
 #[cfg(not(target_arch = "wasm32"))]
 use {
@@ -17,7 +17,7 @@ use {
 };
 
 #[cfg(target_arch = "wasm32")]
-use {libreeb::camera_web::BIAS_TABLE, wasm_bindgen_futures::spawn_local};
+use {libreeb::camera_web::{BiasGroup, BIAS_TABLE}, wasm_bindgen_futures::spawn_local};
 
 // ── Producer trait ────────────────────────────────────────────────────────────
 
@@ -171,6 +171,10 @@ struct ViewerState {
     window_us:     f32,
     last_ev_count: usize,
     last_rate:     f64,
+    // Camera-mode bias controls (empty for file mode)
+    is_camera:     bool,
+    bias_defaults: Vec<u8>,   // factory idac_ctl per BIAS_TABLE entry
+    bias_offsets:  Vec<i32>,  // current offset per entry, starts at 0
 }
 
 /// Async init result slot.
@@ -255,18 +259,25 @@ impl EventViewerApp {
             }
 
             // ── Viewing ───────────────────────────────────────────────────────
-            WasmState::Viewing(mut v) => {
-                if let Some((img, n, rate)) = v.producer.poll_frame() {
-                    upload_frame(ctx, &mut v, img, n, rate);
-                }
-                let mut close = false;
-                let mut slice_changed = false;
-                show_info_panel(ctx, &mut v, &mut close, &mut slice_changed);
-                show_canvas(ctx, &v);
-                if close { v.producer.stop(); return WasmState::Selection; }
-                if slice_changed { v.producer.set_slice(SliceBy::Time(v.window_us as u64)); }
-                WasmState::Viewing(v)
-            }
+             WasmState::Viewing(mut v) => {
+                 if let Some((img, n, rate)) = v.producer.poll_frame() {
+                     upload_frame(ctx, &mut v, img, n, rate);
+                 }
+                 let mut close = false;
+                 let mut slice_changed = false;
+                 let mut bias_changed  = false;
+                 show_info_panel(ctx, &mut v, &mut close, &mut slice_changed, &mut bias_changed);
+                 show_canvas(ctx, &v);
+                 if close { v.producer.stop(); return WasmState::Selection; }
+                 if slice_changed { v.producer.set_slice(SliceBy::Time(v.window_us as u64)); }
+                 if bias_changed {
+                     let biases = v.bias_defaults.iter().enumerate()
+                         .map(|(i, &factory)| (i, factory, v.bias_offsets[i]))
+                         .collect();
+                     v.producer.apply_biases(biases);
+                 }
+                 WasmState::Viewing(v)
+             }
 
             // ── Error ─────────────────────────────────────────────────────────
             WasmState::Error(msg) => {
@@ -327,6 +338,7 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         width, height, label, header_info, producer,
         texture: None, frame_count: 0,
         window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
+        is_camera: false, bias_defaults: vec![], bias_offsets: vec![],
     })
 }
 
@@ -351,8 +363,17 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     let label  = format!("EVK4 — {}", camera.sensor_name());
     let bias_defaults = camera.bias_defaults.clone();
 
+    // Pre-compute the less-noisy default offsets and apply them on first loop tick.
+    let bias_offsets: Vec<i32> = BIAS_TABLE.iter().map(|bi| bi.default_offset).collect();
+    let initial_biases: Vec<(usize, u8, i32)> = bias_defaults.iter().enumerate()
+        .filter(|(i, _)| BIAS_TABLE[*i].default_offset != 0)
+        .map(|(i, &factory)| (i, factory, BIAS_TABLE[i].default_offset))
+        .collect();
+
     let shared = Arc::new(std::sync::Mutex::new(WasmShared {
-        latest_frame: None, pending_slice: None, pending_biases: None, stop: false,
+        latest_frame: None, pending_slice: None,
+        pending_biases: if initial_biases.is_empty() { None } else { Some(initial_biases) },
+        stop: false,
     }));
     let shared_task = Arc::clone(&shared);
     let generator   = FrameGenerator::new(width, height);
@@ -362,17 +383,20 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
         let mut camera = camera;
         let mut acc = libreeb::EventBatch::new();
         loop {
-            {
+            // Extract all pending commands and release the lock *before* any await.
+            let (should_stop, new_slice, pending_biases) = {
                 let mut s = match shared_task.lock() { Ok(g) => g, Err(_) => break };
-                if s.stop { camera.stop().await; break; }
-                if let Some(sl) = s.pending_slice.take() {
-                    slice = sl;
-                    acc = libreeb::EventBatch::new();
-                }
-                if let Some(biases) = s.pending_biases.take() {
-                    for (idx, factory, offset) in biases {
-                        let _ = camera.write_bias(BIAS_TABLE[idx].addr, factory, offset).await;
-                    }
+                (s.stop, s.pending_slice.take(), s.pending_biases.take())
+            };
+            if should_stop { camera.stop().await; break; }
+            if let Some(sl) = new_slice {
+                slice = sl;
+                acc = libreeb::EventBatch::new();
+            }
+            // Apply biases outside the lock — each write_bias is an await point.
+            if let Some(biases) = pending_biases {
+                for (idx, factory, offset) in biases {
+                    let _ = camera.write_bias(BIAS_TABLE[idx].addr, factory, offset).await;
                 }
             }
             if let Some(batch) = camera.read_batch().await { acc.append(batch); }
@@ -401,12 +425,13 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
 
     Ok(ViewerState {
         width, height, label,
-        header_info: bias_defaults.iter().enumerate()
-            .map(|(i, v)| (BIAS_TABLE[i].name.to_string(), format!("{v}")))
-            .collect(),
+        header_info: vec![],
         producer: Box::new(WasmCameraProducer { shared }),
         texture: None, frame_count: 0,
         window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
+        is_camera: true,
+        bias_offsets,  // computed above from default_offset
+        bias_defaults,
     })
 }
 
@@ -504,21 +529,28 @@ impl EventViewerApp {
                 }
             }
 
-            NativeState::Viewing(mut v) => {
-                if let Some((img, n, rate)) = v.producer.poll_frame() {
-                    upload_frame(ctx, &mut v, img, n, rate);
-                }
-                let mut close = false;
-                let mut slice_changed = false;
-                show_info_panel(ctx, &mut v, &mut close, &mut slice_changed);
-                show_canvas(ctx, &v);
-                if close {
-                    v.producer.stop();
-                    return NativeState::Selection { cameras: list_cameras() };
-                }
-                if slice_changed { v.producer.set_slice(SliceBy::Time(v.window_us as u64)); }
-                NativeState::Viewing(v)
-            }
+             NativeState::Viewing(mut v) => {
+                 if let Some((img, n, rate)) = v.producer.poll_frame() {
+                     upload_frame(ctx, &mut v, img, n, rate);
+                 }
+                 let mut close = false;
+                 let mut slice_changed = false;
+                 let mut bias_changed  = false;
+                 show_info_panel(ctx, &mut v, &mut close, &mut slice_changed, &mut bias_changed);
+                 show_canvas(ctx, &v);
+                 if close {
+                     v.producer.stop();
+                     return NativeState::Selection { cameras: list_cameras() };
+                 }
+                 if slice_changed { v.producer.set_slice(SliceBy::Time(v.window_us as u64)); }
+                 if bias_changed {
+                     let biases = v.bias_defaults.iter().enumerate()
+                         .map(|(i, &factory)| (i, factory, v.bias_offsets[i]))
+                         .collect();
+                     v.producer.apply_biases(biases);
+                 }
+                 NativeState::Viewing(v)
+             }
 
             NativeState::Error(msg) => {
                 let mut back = false;
@@ -611,6 +643,7 @@ fn open_file_native(path: PathBuf) -> Result<ViewerState, String> {
         producer: Box::new(NativeProducer { frame_rx, cmd_tx, stop_flag }),
         texture: None, frame_count: 0,
         window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
+        is_camera: false, bias_defaults: vec![], bias_offsets: vec![],
     })
 }
 
@@ -620,6 +653,14 @@ fn open_camera_native(index: usize) -> Result<ViewerState, String> {
     let width  = camera.width();
     let height = camera.height();
     let label  = format!("EVK4 #{index} — {}", camera.sensor_name());
+    // Collect factory defaults before camera is moved into the thread.
+    let bias_defaults: Vec<u8> = (0..BIAS_TABLE.len()).map(|i| camera.bias_default(i)).collect();
+    // Less-noisy starting offsets (applied in the thread before the loop).
+    let bias_offsets: Vec<i32> = BIAS_TABLE.iter().map(|bi| bi.default_offset).collect();
+    let initial_biases: Vec<(usize, u8, i32)> = bias_defaults.iter().enumerate()
+        .filter(|(i, _)| BIAS_TABLE[*i].default_offset != 0)
+        .map(|(i, &factory)| (i, factory, BIAS_TABLE[i].default_offset))
+        .collect();
 
     let (frame_tx, frame_rx) = mpsc::sync_channel::<(RgbImage, usize, f64)>(2);
     let (cmd_tx,   cmd_rx)   = mpsc::channel::<ProducerCmd>();
@@ -629,7 +670,15 @@ fn open_camera_native(index: usize) -> Result<ViewerState, String> {
 
     thread::spawn(move || {
         let generator = FrameGenerator::new(width, height);
-        let mut iter  = SliceIter::new(camera, slice);
+        // Apply less-noisy default offsets before streaming starts.
+        let mut camera = camera;
+        for (idx, factory, offset) in initial_biases {
+            let addr = BIAS_TABLE[idx].addr;
+            if let Err(e) = camera.write_bias(addr, factory, offset) {
+                eprintln!("bias init {}: {e}", BIAS_TABLE[idx].name);
+            }
+        }
+        let mut iter = SliceIter::new(camera, slice);
         loop {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
@@ -666,6 +715,9 @@ fn open_camera_native(index: usize) -> Result<ViewerState, String> {
         producer: Box::new(NativeProducer { frame_rx, cmd_tx, stop_flag }),
         texture: None, frame_count: 0,
         window_us: 33_333.0, last_ev_count: 0, last_rate: 0.0,
+        is_camera: true,
+        bias_offsets,
+        bias_defaults,
     })
 }
 
@@ -696,8 +748,9 @@ fn show_info_panel(
     v: &mut ViewerState,
     close: &mut bool,
     slice_changed: &mut bool,
+    bias_changed: &mut bool,
 ) {
-    egui::SidePanel::left("info").min_width(200.0).show(ctx, |ui| {
+    egui::SidePanel::left("info").min_width(220.0).show(ctx, |ui| {
         ui.add_space(6.0);
         ui.label(egui::RichText::new(&v.label).strong());
         ui.label(format!("{}×{}", v.width, v.height));
@@ -725,7 +778,66 @@ fn show_info_panel(
             *slice_changed = true;
         }
 
-        if !v.header_info.is_empty() {
+        if v.is_camera && !v.bias_defaults.is_empty() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Biases").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Reset").on_hover_text("Reset all offsets to defaults").clicked() {
+                        for (i, bi) in BIAS_TABLE.iter().enumerate() {
+                            if let Some(o) = v.bias_offsets.get_mut(i) { *o = bi.default_offset; }
+                        }
+                        *bias_changed = true;
+                    }
+                });
+            });
+            egui::ScrollArea::vertical().id_salt("bias_scroll").show(ui, |ui| {
+                for (group_label, group_variant) in &[
+                    ("Bandwidth",  BiasGroup::Bandwidth),
+                    ("Contrast",   BiasGroup::Contrast),
+                    ("Advanced",   BiasGroup::Advanced),
+                ] {
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(*group_label).small().strong()
+                    )
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new(format!("bias_{group_label}"))
+                            .num_columns(2)
+                            .spacing([6.0, 3.0])
+                            .show(ui, |ui| {
+                                for (i, bi) in BIAS_TABLE.iter().enumerate() {
+                                    if bi.group != *group_variant { continue; }
+                                    if let Some(offset) = v.bias_offsets.get_mut(i) {
+                                        let factory = v.bias_defaults.get(i).copied().unwrap_or(128);
+                                        let abs_val = (factory as i32 + *offset).clamp(0, 255);
+                                        // Name + absolute value
+                                        ui.label(
+                                            egui::RichText::new(bi.name).monospace().small()
+                                        ).on_hover_text(bi.hint);
+                                        ui.label(
+                                            egui::RichText::new(format!("abs {abs_val}"))
+                                                .small()
+                                                .color(egui::Color32::DARK_GRAY)
+                                        );
+                                        ui.end_row();
+                                        // Full-width slider on next row
+                                        ui.scope(|_| {});
+                                        let resp = ui.add(
+                                            egui::Slider::new(offset, bi.rec_min..=bi.rec_max)
+                                                .step_by(1.0)
+                                                .integer()
+                                                .text("offset"),
+                                        ).on_hover_text(bi.hint);
+                                        if resp.changed() { *bias_changed = true; }
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    });
+                }
+            });
+        } else if !v.header_info.is_empty() {
             ui.separator();
             ui.label(egui::RichText::new("File header").strong());
             egui::ScrollArea::vertical().id_salt("hdr_scroll").show(ui, |ui| {
