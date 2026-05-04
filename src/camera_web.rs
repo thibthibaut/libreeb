@@ -13,6 +13,13 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{UsbDevice, UsbDeviceRequestOptions};
 
+/// Log a formatted string to the browser JS console.
+macro_rules! clog {
+    ($($t:tt)*) => {
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!($($t)*)))
+    };
+}
+
 use crate::{evt3::{Evt3, Evt3Decoder}, EventBatch, EventDecoder};
 use zerocopy::FromBytes;
 
@@ -242,12 +249,14 @@ const IFACE:   u8 = 0;
 
 // ── Treuzell async helpers ────────────────────────────────────────────────────
 
-/// Encode a Treuzell frame: `[property, size, payload...]` as LE u32s → u8 bytes.
+/// Encode a Treuzell frame: `[property, size_bytes, payload...]` as LE u32s → u8 bytes.
+/// The `size` field is the payload length in **bytes** (= words × 4), matching the
+/// native `build_tz_frame` in `camera.rs`.
 fn encode_tz(prop: u32, payload: &[u32]) -> Vec<u8> {
-    let size = payload.len() as u32;
-    let mut out = Vec::with_capacity((2 + payload.len()) * 4);
+    let size_bytes = (payload.len() as u32) * 4;
+    let mut out = Vec::with_capacity(8 + payload.len() * 4);
     out.extend_from_slice(&prop.to_le_bytes());
-    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&size_bytes.to_le_bytes());
     for &w in payload {
         out.extend_from_slice(&w.to_le_bytes());
     }
@@ -297,12 +306,14 @@ async fn tz_transfer(
 }
 
 async fn tz_read_reg(device: &UsbDevice, dev_id: u32, addr: u32) -> Result<u32, JsValue> {
+    // Request payload: [dev_id, addr, nval=1]  (nval is required by Treuzell)
+    // Response payload (after decode_tz strips header): [dev_id, addr, val]
     let payload = tz_transfer(
         device,
         TZ_PROP_DEVICE_REG32,
-        &[dev_id, addr],
+        &[dev_id, addr, 1],
     ).await?;
-    payload.first().copied().ok_or_else(|| JsValue::from_str("empty read response"))
+    payload.get(2).copied().ok_or_else(|| JsValue::from_str("reg read response too short"))
 }
 
 async fn tz_write_reg(device: &UsbDevice, dev_id: u32, addr: u32, val: u32) -> Result<(), JsValue> {
@@ -352,19 +363,54 @@ async fn run_seq(device: &UsbDevice, dev_id: u32, seq: &[RegOp]) -> Result<(), J
 }
 
 async fn find_sensor(device: &UsbDevice) -> Result<(u32, &'static SensorSpec), JsValue> {
-    let resp = tz_transfer(device, TZ_PROP_DEVICES, &[]).await?;
+    clog!("[libreeb] find_sensor: querying TZ_PROP_DEVICES");
+    let resp = tz_transfer(device, TZ_PROP_DEVICES, &[]).await
+        .map_err(|e| {
+            clog!("[libreeb] find_sensor: TZ_PROP_DEVICES failed: {:?}", e);
+            e
+        })?;
+
     if resp.is_empty() {
+        clog!("[libreeb] find_sensor: TZ_PROP_DEVICES response empty");
         return Err(JsValue::from_str("TZ_PROP_DEVICES response empty"));
     }
+
     let count = resp[0];
+    clog!("[libreeb] find_sensor: device count = {}", count);
+
+    let mut last_err: Option<String> = None;
+
     for dev_id in 0..count {
-        if let Ok(id_val) = tz_read_reg(device, dev_id, SENSOR_ID_ADDR).await {
-            if let Some((_, spec)) = SENSOR_TABLE.iter().find(|(id, _)| *id == id_val) {
-                return Ok((dev_id, spec));
+        clog!("[libreeb] find_sensor: reading sensor ID register from device {}", dev_id);
+        match tz_read_reg(device, dev_id, SENSOR_ID_ADDR).await {
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                clog!("[libreeb] find_sensor: tz_read_reg dev={} FAILED: {}", dev_id, msg);
+                last_err = Some(msg);
+            }
+            Ok(id_val) => {
+                clog!("[libreeb] find_sensor: dev={} sensor_id = {:#010x}", dev_id, id_val);
+                if let Some((_, spec)) = SENSOR_TABLE.iter().find(|(id, _)| *id == id_val) {
+                    clog!("[libreeb] find_sensor: matched sensor \"{}\" ({}x{})",
+                          spec.name, spec.width, spec.height);
+                    return Ok((dev_id, spec));
+                }
+                let known: Vec<String> = SENSOR_TABLE.iter()
+                    .map(|(id, s)| format!("{:#010x} ({})", id, s.name))
+                    .collect();
+                let msg = format!(
+                    "Sensor ID {:#010x} not in table. Known: [{}]",
+                    id_val,
+                    known.join(", ")
+                );
+                clog!("[libreeb] find_sensor: {}", msg);
+                last_err = Some(msg);
             }
         }
     }
-    Err(JsValue::from_str("No known sensor found"))
+
+    let detail = last_err.unwrap_or_else(|| "no devices enumerated".to_string());
+    Err(JsValue::from_str(&format!("No known sensor found: {}", detail)))
 }
 
 // ── Public camera struct ──────────────────────────────────────────────────────
