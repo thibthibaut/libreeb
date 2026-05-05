@@ -25,7 +25,7 @@ pub enum RawEventType {
 }
 
 /// Width × height of the sensor in pixels.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct CameraGeometry {
     pub width:  u32,
     pub height: u32,
@@ -118,4 +118,106 @@ pub fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileR
         event_type,
         camera_geometry: CameraGeometry { width: cam_width, height: cam_height },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn parse_evt3_with_geometry_field() {
+        let header_text = "\
+% Date 2024-01-01 12:00:00
+% geometry 1280x720
+% format EVT3
+% evt 3.0
+";
+        let mut cursor = Cursor::new(header_text.as_bytes());
+        let header = parse_header(&mut cursor).unwrap();
+
+        assert_eq!(header.camera_geometry.width, 1280);
+        assert_eq!(header.camera_geometry.height, 720);
+        match header.event_type {
+            RawEventType::Evt3 => {}
+            _ => panic!("Expected EVT3"),
+        }
+    }
+
+    #[test]
+    fn parse_evt3_with_format_dimensions() {
+        let header_text = "\
+% Date 2024-01-01 12:00:00
+% format EVT3;width=640;height=480
+% evt 3.0
+";
+        let mut cursor = Cursor::new(header_text.as_bytes());
+        let header = parse_header(&mut cursor).unwrap();
+
+        assert_eq!(header.camera_geometry.width, 640);
+        assert_eq!(header.camera_geometry.height, 480);
+    }
+
+    #[test]
+    fn parse_evt21_header() {
+        let header_text = "\
+% Date 2023-12-01 10:30:45
+% geometry 320x320
+% evt 2.1
+";
+        let mut cursor = Cursor::new(header_text.as_bytes());
+        let header = parse_header(&mut cursor).unwrap();
+
+        match header.event_type {
+            RawEventType::Evt21 => {}
+            _ => panic!("Expected EVT2.1"),
+        }
+        assert_eq!(header.camera_geometry.width, 320);
+        assert_eq!(header.camera_geometry.height, 320);
+    }
+
+    #[test]
+    fn parse_integrator_name() {
+        let header_text = "\
+% Date 2024-01-01 12:00:00
+% integrator_name Prophesee
+% geometry 1280x720
+% format EVT3
+";
+        let mut cursor = Cursor::new(header_text.as_bytes());
+        let header = parse_header(&mut cursor).unwrap();
+
+        assert_eq!(
+            header.header_dict.get("integrator_name"),
+            Some(&"Prophesee".to_string())
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse_real_evt3_file() {
+        use crate::RawFileReader;
+        use std::path::Path;
+        let reader = RawFileReader::new(Path::new("data/gen4_evt3_hand.raw")).unwrap();
+        assert_eq!(reader.header.camera_geometry.width, 1280);
+        assert_eq!(reader.header.camera_geometry.height, 720);
+        match reader.header.event_type {
+            RawEventType::Evt3 => {}
+            _ => panic!("Expected EVT3"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse_real_evt21_file() {
+        use crate::RawFileReader;
+        use std::path::Path;
+        let reader = RawFileReader::new(Path::new("data/claque_doigt_evt21.raw")).unwrap();
+        assert_eq!(reader.header.camera_geometry.width, 320);
+        assert_eq!(reader.header.camera_geometry.height, 320);
+        match reader.header.event_type {
+            RawEventType::Evt21 => {}
+            _ => panic!("Expected EVT2.1"),
+        }
+    }
 }

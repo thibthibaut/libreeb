@@ -16,9 +16,9 @@ fn load_file(path: &str) -> Arc<[u8]> {
 
 fn bench_decode_only(c: &mut Criterion) {
     let files = [
-        ("gen4_evt3_hand", "data/gen4_evt3_hand.raw"),
-        ("driving_sample", "data/driving_sample.raw"),
-        ("claque_doigt_evt21", "data/claque_doigt_evt21.raw"),
+        ("gen4_evt3_hand", "data/evt3/gen4_evt3_hand.raw"),
+        ("driving_sample", "data/evt3/driving_sample.raw"),
+        ("claque_doigt_evt21", "data/evt21/claque_doigt_evt21.raw"),
     ];
 
     let mut group = c.benchmark_group("decode_only");

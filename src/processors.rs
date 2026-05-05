@@ -1,4 +1,4 @@
-use crate::EventBatch;
+use crate::{EventBatch, header::CameraGeometry};
 use image::RgbImage;
 
 const BACKGROUND: [u8; 3] = [30, 30, 46];
@@ -17,20 +17,23 @@ const NEGATIVE: [u8; 3] = [137, 220, 235];
 ///
 /// Out-of-bounds events are silently ignored.
 pub struct FrameGenerator {
-    width: u32,
-    height: u32,
+    geometry: CameraGeometry,
 }
 
 impl FrameGenerator {
-    pub fn new(width: u32, height: u32) -> Self {
-        FrameGenerator { width, height }
+    pub fn new(geometry: CameraGeometry) -> Self {
+        FrameGenerator { geometry }
     }
 
     /// Generates an RGB frame from a single [`EventBatch`].
     pub fn generate(&self, batch: &EventBatch) -> RgbImage {
-        let mut img = RgbImage::from_pixel(self.width, self.height, image::Rgb(BACKGROUND));
+        let mut img = RgbImage::from_pixel(
+            self.geometry.width,
+            self.geometry.height,
+            image::Rgb(BACKGROUND)
+        );
         for evt in batch {
-            if (evt.x as u32) < self.width && (evt.y as u32) < self.height {
+            if (evt.x as u32) < self.geometry.width && (evt.y as u32) < self.geometry.height {
                 let color = if evt.p != 0 { POSITIVE } else { NEGATIVE };
                 img.put_pixel(evt.x as u32, evt.y as u32, image::Rgb(color));
             }
@@ -50,7 +53,7 @@ mod tests {
 
     #[test]
     fn empty_batch_is_background() {
-        let gen = FrameGenerator::new(10, 8);
+        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 8 });
         let frame = gen.generate(&EventBatch::new());
         assert_eq!(frame.dimensions(), (10, 8));
         for pixel in frame.pixels() {
@@ -60,13 +63,13 @@ mod tests {
 
     #[test]
     fn frame_dimensions_match_constructor() {
-        let gen = FrameGenerator::new(320, 240);
+        let gen = FrameGenerator::new(CameraGeometry { width: 320, height: 240 });
         assert_eq!(gen.generate(&EventBatch::new()).dimensions(), (320, 240));
     }
 
     #[test]
     fn positive_event_paints_orange() {
-        let gen = FrameGenerator::new(10, 10);
+        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
         let mut batch = EventBatch::new();
         batch.push(5, 3, 0, 1);
         let frame = gen.generate(&batch);
@@ -76,7 +79,7 @@ mod tests {
 
     #[test]
     fn negative_event_paints_cyan() {
-        let gen = FrameGenerator::new(10, 10);
+        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
         let mut batch = EventBatch::new();
         batch.push(2, 7, 0, 0);
         let frame = gen.generate(&batch);
@@ -85,7 +88,7 @@ mod tests {
 
     #[test]
     fn last_event_wins_on_same_pixel() {
-        let gen = FrameGenerator::new(10, 10);
+        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
         let mut batch = EventBatch::new();
         batch.push(5, 5, 0, 1); // positive first
         batch.push(5, 5, 1, 0); // negative last → wins
@@ -95,7 +98,7 @@ mod tests {
 
     #[test]
     fn out_of_bounds_events_are_ignored() {
-        let gen = FrameGenerator::new(10, 10);
+        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
         let mut batch = EventBatch::new();
         batch.push(10, 0, 0, 1);
         batch.push(0, 10, 0, 1);
@@ -115,7 +118,7 @@ mod tests {
         assert_eq!(reader.header.camera_geometry.height, h);
 
         let batch = reader.read_events().next().expect("no batches in file");
-        let gen = FrameGenerator::new(w, h);
+        let gen = FrameGenerator::new(reader.header.camera_geometry);
         let frame = gen.generate(&batch);
         assert_eq!(frame.dimensions(), (w, h));
         assert!(
