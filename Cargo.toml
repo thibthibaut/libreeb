@@ -3,6 +3,13 @@ name = "libreeb"
 version = "0.1.0"
 edition = "2021"
 
+# ── Features ──────────────────────────────────────────────────────────────────
+
+[features]
+default = ["camera", "python"]
+camera = ["rusb"]
+python = ["pyo3"]
+
 # ── Shared dependencies ───────────────────────────────────────────────────────
 
 [dependencies]
@@ -20,11 +27,14 @@ serde_json  = "1"
 # ── Native-only dependencies ──────────────────────────────────────────────────
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rusb = "0.9"
+rusb = { version = "0.9", optional = true }
+ratatui = "0.29"
+crossterm = "0.28"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.pyo3]
 version  = "0.24.0"
 features = ["abi3-py38"]
+optional = true
 
 # ── WASM-only dependencies ────────────────────────────────────────────────────
 
@@ -35,10 +45,10 @@ js-sys               = "0.3"
 # getrandom must opt-in to JS/WASM RNG source on wasm32-unknown-unknown
 getrandom = { version = "0.3", features = ["wasm_js"] }
 # GUI deps — only needed for the WASM event_viewer binary
-eframe   = { version = "0.31", features = ["glow"] }
-egui     = "0.31"
-rfd      = "0.15"
-web-time = "1.1"
+eframe     = { version = "0.31", features = ["glow"] }
+egui       = "0.31"
+rfd        = "0.15"
+web-time   = "1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version  = "0.3"
@@ -101,5 +111,15 @@ name = "bench_decoder"
 path = "src/bench_decoders.rs"
 
 [[bin]]
+name = "discover_camera"
+path = "src/bin/discover_camera.rs"
+required-features = ["camera"]
+
+[[bin]]
 name = "event_viewer"
 path = "src/bin/event_viewer/main.rs"
+
+[[bin]]
+name = "tui_viewer"
+path = "src/bin/tui_viewer.rs"
+required-features = []

@@ -24,7 +24,7 @@
     # https://devenv.sh/reference/options/#languagesrustchannel
     channel = "stable";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer"  ];
-    targets = [ "wasm32-unknown-unknown" ];
+    targets = [ "wasm32-unknown-unknown" "x86_64-unknown-linux-musl" ];
   };
 
 

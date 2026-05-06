@@ -2,8 +2,8 @@ use evt_reader::EvtReader;
 use std::io::{self, BufReader, Read};
 use thiserror::Error;
 
-// pyo3 — native only
-#[cfg(not(target_arch = "wasm32"))]
+// pyo3 — native only with python feature
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 use pyo3::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -25,14 +25,15 @@ pub mod header;
 mod macros;
 pub mod processors;
 pub mod slicer;
+pub mod tee_reader;
 
 // Camera module: native uses rusb, WASM uses WebUSB
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "camera"))]
 pub mod camera;
 #[cfg(target_arch = "wasm32")]
 pub mod camera_web;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "camera"))]
 pub use camera::CameraReader;
 #[cfg(target_arch = "wasm32")]
 pub use camera_web::WasmCameraReader;
@@ -76,7 +77,7 @@ pub enum RawFileReaderError {
 /// with polarity `p` (1 = brighter, 0 = darker).
 ///
 /// Timestamps are in microseconds relative to the start of the recording.
-#[cfg_attr(not(target_arch = "wasm32"), pyclass)]
+#[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventCD {
     pub x: u16,
@@ -89,7 +90,7 @@ pub struct EventCD {
 ///
 /// This is the fundamental unit returned by all event iterators.  The four
 /// parallel vectors are always the same length.
-#[cfg_attr(not(target_arch = "wasm32"), pyclass)]
+#[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
 #[derive(Debug, Clone)]
 pub struct EventBatch {
     pub x: Vec<u16>,
@@ -214,7 +215,7 @@ impl Default for EventBatch {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymethods]
 impl EventBatch {
     fn __len__(&self) -> usize {
@@ -234,7 +235,7 @@ pub trait EventDecoder {
 
 // ── RawFileReader ─────────────────────────────────────────────────────────────
 
-#[cfg_attr(not(target_arch = "wasm32"), pyclass)]
+#[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
 pub struct RawFileReader {
     pub header: RawFileHeader,
     /// Path is only meaningful on native; empty on WASM.
@@ -337,7 +338,7 @@ impl RawFileReader {
 
 // ── Python bindings (native only) ─────────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymethods]
 impl RawFileReader {
     #[new]
@@ -372,13 +373,13 @@ impl RawFileReader {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pyclass]
 pub struct EventIterator {
     inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymethods]
 impl EventIterator {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
@@ -401,20 +402,20 @@ impl EventIterator {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pyclass]
 pub struct SliceIterator {
     inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymethods]
 impl SliceIterator {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
     fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> { slf.inner.next() }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymodule]
 fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EventBatch>()?;

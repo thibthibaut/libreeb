@@ -1,6 +1,7 @@
 //! Application state types.
 
 use crate::producers::Producer;
+use crate::recording::RecordingState;
 use eframe::egui;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -41,9 +42,61 @@ pub struct ViewerState {
     // Playback state
     pub playback_state: PlaybackState,
     pub fps_tracker: FpsTracker,
+    
+    // Timestamp tracking
+    pub first_timestamp: Option<u64>,  // First event timestamp (µs)
+    pub last_timestamp: Option<u64>,   // Latest event timestamp (µs)
+
+    // Recording state
+    pub recorder: Arc<Mutex<RecordingState>>,
 
     // Async operations
     pub pending_bias_load: Option<Arc<Mutex<Option<Vec<i32>>>>>,
+}
+
+/// Event rate history for plotting.
+pub struct EventRateHistory {
+    pub samples: VecDeque<(f64, f64)>, // (time_seconds, event_rate)
+    pub lookback_window: f64,          // Seconds of history to keep
+}
+
+impl EventRateHistory {
+    pub fn new(lookback_window: f64) -> Self {
+        EventRateHistory {
+            samples: VecDeque::with_capacity(200),
+            lookback_window,
+        }
+    }
+
+    pub fn add_sample(&mut self, time: f64, rate: f64) {
+        self.samples.push_back((time, rate));
+        
+        // Remove samples older than lookback window
+        let cutoff = time - self.lookback_window;
+        while let Some(&(t, _)) = self.samples.front() {
+            if t < cutoff {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn set_lookback_window(&mut self, window: f64) {
+        self.lookback_window = window;
+        
+        // Clean up old samples
+        if let Some(&(last_time, _)) = self.samples.back() {
+            let cutoff = last_time - self.lookback_window;
+            while let Some(&(t, _)) = self.samples.front() {
+                if t < cutoff {
+                    self.samples.pop_front();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Playback speed and FPS tracking.

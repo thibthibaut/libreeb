@@ -1,14 +1,18 @@
 //! Producer trait and implementations for event sources.
 
 #[cfg(target_arch = "wasm32")]
+use crate::recording::RecordingState;
+#[cfg(target_arch = "wasm32")]
 use image::RgbImage;
 #[cfg(target_arch = "wasm32")]
-use libreeb::SliceBy;
+use libreeb::{header::RawFileHeader, SliceBy};
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_arch = "wasm32")]
 pub trait Producer: Send + 'static {
-    /// Returns (frame, event_count, event_rate_ev_per_s) for the latest slice.
-    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64)>;
+    /// Returns (frame, event_count, event_rate_ev_per_s, last_timestamp_us) for the latest slice.
+    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64, u64)>;
     
     /// Set slice window.
     fn set_slice(&mut self, slice: SliceBy);
@@ -21,6 +25,15 @@ pub trait Producer: Send + 'static {
     
     /// Stop the producer.
     fn stop(&mut self);
+    
+    /// Get reference to header (for recording).
+    fn get_header(&self) -> &RawFileHeader;
+    
+    /// Start recording to the given RecordingState.
+    fn start_recording(&mut self, recorder: Arc<Mutex<RecordingState>>);
+    
+    /// Stop recording.
+    fn stop_recording(&mut self);
 }
 
 #[cfg(target_arch = "wasm32")]

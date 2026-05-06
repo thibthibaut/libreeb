@@ -43,7 +43,6 @@ pub fn show_playback_controls(
                         .selectable_value(&mut state.speed_multiplier, speed, label)
                         .clicked()
                     {
-                        state.target_fps = 30.0 * speed;
                         changed = true;
                     }
                 }
@@ -52,21 +51,7 @@ pub fn show_playback_controls(
 
     // FPS display (always visible)
     ui.add_space(4.0);
-    ui.label(format!("Target FPS: {:.1}", state.target_fps));
-
-    let fps_color = if state.actual_fps < state.target_fps * 0.6 {
-        egui::Color32::RED // Struggling
-    } else if state.actual_fps < state.target_fps * 0.8 {
-        egui::Color32::YELLOW // Close
-    } else {
-        ui.style().visuals.text_color() // Good
-    };
-
-    ui.colored_label(fps_color, format!("Actual FPS: {:.1}", state.actual_fps));
-
-    if state.actual_fps < state.target_fps * 0.6 {
-        ui.colored_label(egui::Color32::RED, "⚠ Display struggling");
-    }
+    ui.label(format!("FPS: {:.1}", state.actual_fps));
 
     changed
 }

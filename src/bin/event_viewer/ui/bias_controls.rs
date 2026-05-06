@@ -11,6 +11,11 @@ pub enum BiasAction {
     Reset,
 }
 
+pub struct BiasControlResult {
+    pub action: BiasAction,
+    pub changed: bool,
+}
+
 /// Parse bias file content into offset vector.
 pub fn parse_bias_file(content: &str) -> Result<Vec<i32>, String> {
     let mut offsets = vec![0i32; BIAS_TABLE.len()];
@@ -63,8 +68,9 @@ pub fn show_bias_controls(
     ui: &mut egui::Ui,
     bias_defaults: &[u8],
     bias_offsets: &mut Vec<i32>,
-) -> BiasAction {
+) -> BiasControlResult {
     let mut action = BiasAction::None;
+    let mut changed = false;
 
     ui.separator();
 
@@ -121,23 +127,32 @@ pub fn show_bias_controls(
                                         let factory = bias_defaults.get(i).copied().unwrap_or(128);
                                         let abs_val = (factory as i32 + *offset).clamp(0, 255);
 
+                                        // Name + absolute value row
                                         ui.label(
-                                            egui::RichText::new(bi.name).monospace().small(),
+                                            egui::RichText::new(bi.name).monospace().small()
                                         )
                                         .on_hover_text(bi.hint);
 
                                         ui.label(
-                                            egui::RichText::new(format!("{}", abs_val))
-                                                .monospace()
-                                                .small(),
+                                            egui::RichText::new(format!("abs {}", abs_val))
+                                                .small()
+                                                .color(egui::Color32::DARK_GRAY)
                                         );
                                         ui.end_row();
 
-                                        ui.label("");
-                                        ui.add(
+                                        // Full-width slider on next row
+                                        ui.scope(|_| {});
+                                        let resp = ui.add(
                                             egui::Slider::new(offset, bi.rec_min..=bi.rec_max)
-                                                .show_value(false),
-                                        );
+                                                .step_by(1.0)
+                                                .integer()
+                                                .text("offset")
+                                        )
+                                        .on_hover_text(bi.hint);
+                                        
+                                        if resp.changed() {
+                                            changed = true;
+                                        }
                                         ui.end_row();
                                     }
                                 }
@@ -146,5 +161,5 @@ pub fn show_bias_controls(
             }
         });
 
-    action
+    BiasControlResult { action, changed }
 }
