@@ -484,6 +484,9 @@ impl WasmCameraReader {
     }
 
     /// Read a batch and also return the raw bytes (for recording).
+    /// 
+    /// Important: Only returns bytes that were actually decoded (aligned to word boundaries).
+    /// This ensures recordings are always properly aligned and can be played back.
     pub async fn read_batch_with_bytes(&mut self) -> Option<(EventBatch, Vec<u8>)> {
         let result = JsFuture::from(
             self.device.transfer_in(EP_DATA, BULK_BUF_SIZE)
@@ -498,14 +501,19 @@ impl WasmCameraReader {
         let word_size  = std::mem::size_of::<Evt3>();
         let word_count = bytes.len() / word_size;
         if word_count == 0 { return None; }
-        let evts: &[Evt3] = bytemuck::cast_slice(&bytes[..word_count * word_size]);
+        
+        // Calculate aligned byte count
+        let aligned_byte_count = word_count * word_size;
+        let evts: &[Evt3] = bytemuck::cast_slice(&bytes[..aligned_byte_count]);
 
         let mut batch = EventBatch::new();
         self.decoder.decode(evts, &mut batch);
         if batch.is_empty() { 
             None 
-        } else { 
-            Some((batch, bytes))
+        } else {
+            // Only return the bytes that were actually decoded (aligned)
+            // This prevents misalignment issues in recordings
+            Some((batch, bytes[..aligned_byte_count].to_vec()))
         }
     }
 
