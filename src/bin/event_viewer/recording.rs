@@ -95,8 +95,7 @@ impl RecordingState {
             }
         }
         
-        // Blank line to end header
-        self.buffer.push(b'\n');
+        // No blank line needed - .raw format has event data immediately after last header field
     }
 
     /// Append raw event bytes to the buffer.
