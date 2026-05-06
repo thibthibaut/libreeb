@@ -1,15 +1,17 @@
 //! File-based event producer with timestamp-based playback timing.
 
 use super::{calculate_rate, Producer};
+use crate::recording::RecordingState;
 use image::RgbImage;
-use libreeb::{header::CameraGeometry, processors::FrameGenerator, EventBatch, RawFileReader, SliceBy, SliceIter};
-use std::sync::Arc;
+use libreeb::{header::{CameraGeometry, RawFileHeader}, processors::FrameGenerator, EventBatch, RawFileReader, SliceBy, SliceIter};
+use std::sync::{Arc, Mutex};
 use web_time::Instant;
 
 type BoxBatchIter = Box<dyn Iterator<Item = EventBatch> + Send + Sync + 'static>;
 
 pub struct WasmFileProducer {
     bytes: Arc<[u8]>,
+    header: RawFileHeader,
     generator: FrameGenerator,
     slicer: SliceIter<BoxBatchIter>,
     slice: SliceBy,
@@ -19,13 +21,17 @@ pub struct WasmFileProducer {
     playback_start: Option<Instant>,
     first_event_ts: Option<u64>,
     buffered_batch: Option<EventBatch>,
+    
+    // Recording state  
+    recorder: Option<Arc<Mutex<RecordingState>>>,
 }
 
 impl WasmFileProducer {
-    pub fn new(bytes: Arc<[u8]>, geometry: CameraGeometry, slice: SliceBy) -> Self {
+    pub fn new(bytes: Arc<[u8]>, geometry: CameraGeometry, slice: SliceBy, header: RawFileHeader) -> Self {
         let slicer = Self::make_slicer(Arc::clone(&bytes), slice);
         WasmFileProducer {
             bytes,
+            header,
             generator: FrameGenerator::new(geometry),
             slicer,
             slice,
@@ -33,6 +39,7 @@ impl WasmFileProducer {
             playback_start: None,
             first_event_ts: None,
             buffered_batch: None,
+            recorder: None,
         }
     }
 
@@ -81,15 +88,16 @@ impl WasmFileProducer {
         self.buffered_batch = None;
     }
 
-    fn render_batch(&self, batch: EventBatch) -> (RgbImage, usize, f64) {
+    fn render_batch(&self, batch: EventBatch) -> (RgbImage, usize, f64, u64) {
         let n = batch.len();
         let rate = calculate_rate(&batch);
-        (self.generator.generate(&batch), n, rate)
+        let last_ts = batch.t.last().copied().unwrap_or(0);
+        (self.generator.generate(&batch), n, rate, last_ts)
     }
 }
 
 impl Producer for WasmFileProducer {
-    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64)> {
+    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64, u64)> {
         // Check buffered batch first
         if let Some(batch) = self.buffered_batch.take() {
             if self.should_display_batch(&batch) {
@@ -136,7 +144,9 @@ impl Producer for WasmFileProducer {
 
     fn set_playback_speed(&mut self, speed: f32) {
         self.playback_speed = speed.clamp(0.003, 3.0);
-        // Don't reset timing - continue with new speed
+        // Reset timing so playback continues from current position at new speed
+        self.playback_start = None;
+        self.first_event_ts = None;
     }
 
     fn apply_biases(&mut self, _: Vec<(usize, u8, i32)>) {
@@ -145,5 +155,42 @@ impl Producer for WasmFileProducer {
 
     fn stop(&mut self) {
         // No-op for file mode
+    }
+    
+    fn get_header(&self) -> &RawFileHeader {
+        &self.header
+    }
+    
+    fn start_recording(&mut self, recorder: Arc<Mutex<RecordingState>>) {
+        self.recorder = Some(recorder.clone());
+        
+        // For file mode, copy all event data (everything after header) immediately
+        if let Ok(mut rec) = recorder.lock() {
+            // Find where header ends (first line that doesn't start with %)
+            let mut header_end = 0;
+            
+            for (i, &byte) in self.bytes.iter().enumerate() {
+                if byte == b'\n' {
+                    let next_pos = i + 1;
+                    if next_pos < self.bytes.len() && self.bytes[next_pos] != b'%' {
+                        // Found first non-% line - event data starts here
+                        header_end = next_pos;
+                        break;
+                    }
+                }
+            }
+            
+            // Copy all event bytes to RecordingState.buffer
+            if header_end < self.bytes.len() {
+                rec.buffer.extend_from_slice(&self.bytes[header_end..]);
+                web_sys::console::log_1(
+                    &format!("File recording: copied {} bytes of event data", self.bytes.len() - header_end).into()
+                );
+            }
+        }
+    }
+    
+    fn stop_recording(&mut self) {
+        self.recorder = None;
     }
 }

@@ -480,6 +480,11 @@ impl WasmCameraReader {
     }
 
     pub async fn read_batch(&mut self) -> Option<EventBatch> {
+        self.read_batch_with_bytes().await.map(|(batch, _)| batch)
+    }
+
+    /// Read a batch and also return the raw bytes (for recording).
+    pub async fn read_batch_with_bytes(&mut self) -> Option<(EventBatch, Vec<u8>)> {
         let result = JsFuture::from(
             self.device.transfer_in(EP_DATA, BULK_BUF_SIZE)
         ).await.ok()?;
@@ -497,7 +502,11 @@ impl WasmCameraReader {
 
         let mut batch = EventBatch::new();
         self.decoder.decode(evts, &mut batch);
-        if batch.is_empty() { None } else { Some(batch) }
+        if batch.is_empty() { 
+            None 
+        } else { 
+            Some((batch, bytes))
+        }
     }
 
     pub async fn write_bias(&self, addr: u32, factory: u8, offset: i32) -> Result<(), JsValue> {

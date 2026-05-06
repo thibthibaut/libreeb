@@ -4,6 +4,8 @@
 #[cfg(target_arch = "wasm32")]
 mod producers;
 #[cfg(target_arch = "wasm32")]
+mod recording;
+#[cfg(target_arch = "wasm32")]
 mod state;
 #[cfg(target_arch = "wasm32")]
 mod ui;
@@ -15,7 +17,7 @@ use image::RgbImage;
 #[cfg(target_arch = "wasm32")]
 use libreeb::{
     biases::{BiasGroup, BIAS_TABLE},
-    header::CameraGeometry,
+    header::{CameraGeometry, RawFileHeader},
     processors::FrameGenerator,
     RawFileReader, SliceBy,
 };
@@ -96,8 +98,8 @@ impl EventViewerApp {
             // ── Viewing ───────────────────────────────────────────────────────
             WasmState::Viewing(mut v) => {
                 // Poll for new frame
-                if let Some((img, n, rate)) = v.producer.poll_frame() {
-                    upload_frame(ctx, &mut v, img, n, rate);
+                if let Some((img, n, rate, timestamp)) = v.producer.poll_frame() {
+                    upload_frame(ctx, &mut v, img, n, rate, timestamp);
                 }
 
                 // Show UI and get actions
@@ -117,6 +119,34 @@ impl EventViewerApp {
                 if actions.speed_changed {
                     v.producer
                         .set_playback_speed(v.playback_state.speed_multiplier);
+                }
+
+                // Handle recording actions
+                if actions.recording_start {
+                    if let Ok(mut rec) = v.recorder.lock() {
+                        let header = v.producer.get_header();
+                        rec.start(header);
+                        web_sys::console::log_1(&"Recording started".into());
+                    }
+                    
+                    // Pass the RecordingState to the producer
+                    v.producer.start_recording(v.recorder.clone());
+                }
+
+                if actions.recording_stop {
+                    // Stop recording in the producer first
+                    v.producer.stop_recording();
+                    
+                    if let Ok(mut rec) = v.recorder.lock() {
+                        let buffer = rec.stop();
+                        let filename = rec.filename.clone();
+                        
+                        // Trigger browser download
+                        download_file(&filename, &buffer);
+                        
+                        rec.reset();
+                        web_sys::console::log_1(&format!("Recording stopped: {} ({} bytes)", filename, buffer.len()).into());
+                    }
                 }
 
                 // Handle bias actions
@@ -241,9 +271,82 @@ impl EventViewerApp {
     }
 }
 
+/// Download a file to the browser.
+#[cfg(target_arch = "wasm32")]
+fn download_file(filename: &str, data: &[u8]) {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => {
+            web_sys::console::error_1(&"Failed to get window".into());
+            return;
+        }
+    };
+
+    let document = match window.document() {
+        Some(d) => d,
+        None => {
+            web_sys::console::error_1(&"Failed to get document".into());
+            return;
+        }
+    };
+
+    // Create Blob from data
+    let array = js_sys::Uint8Array::from(data);
+    let blob_parts = js_sys::Array::new();
+    blob_parts.push(&array);
+
+    let blob_props = BlobPropertyBag::new();
+    blob_props.set_type("application/octet-stream");
+
+    let blob = match Blob::new_with_u8_array_sequence_and_options(&blob_parts, &blob_props) {
+        Ok(b) => b,
+        Err(e) => {
+            web_sys::console::error_1(&format!("Failed to create blob: {:?}", e).into());
+            return;
+        }
+    };
+
+    // Create download link
+    let url = match Url::create_object_url_with_blob(&blob) {
+        Ok(u) => u,
+        Err(e) => {
+            web_sys::console::error_1(&format!("Failed to create object URL: {:?}", e).into());
+            return;
+        }
+    };
+
+    let anchor = match document.create_element("a") {
+        Ok(a) => match a.dyn_into::<HtmlAnchorElement>() {
+            Ok(anchor) => anchor,
+            Err(e) => {
+                web_sys::console::error_1(&format!("Failed to cast to anchor: {:?}", e).into());
+                let _ = Url::revoke_object_url(&url);
+                return;
+            }
+        },
+        Err(e) => {
+            web_sys::console::error_1(&format!("Failed to create anchor: {:?}", e).into());
+            let _ = Url::revoke_object_url(&url);
+            return;
+        }
+    };
+
+    anchor.set_href(&url);
+    anchor.set_download(filename);
+    anchor.click();
+
+    // Cleanup
+    let _ = Url::revoke_object_url(&url);
+    
+    web_sys::console::log_1(&format!("Downloaded: {}", filename).into());
+}
+
 /// Upload frame to GPU texture and update stats.
 #[cfg(target_arch = "wasm32")]
-fn upload_frame(ctx: &egui::Context, v: &mut ViewerState, img: RgbImage, ev_count: usize, rate: f64) {
+fn upload_frame(ctx: &egui::Context, v: &mut ViewerState, img: RgbImage, ev_count: usize, rate: f64, timestamp: u64) {
     let pixels: Vec<egui::Color32> = img
         .pixels()
         .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
@@ -261,6 +364,12 @@ fn upload_frame(ctx: &egui::Context, v: &mut ViewerState, img: RgbImage, ev_coun
     v.frame_count += 1;
     v.last_ev_count = ev_count;
     v.last_rate = rate;
+
+    // Update timestamp tracking
+    if v.first_timestamp.is_none() {
+        v.first_timestamp = Some(timestamp);
+    }
+    v.last_timestamp = Some(timestamp);
 
     // Update FPS tracking
     v.fps_tracker.record_frame();
@@ -303,8 +412,8 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         width: probe.header.camera_geometry.width.max(1),
         height: probe.header.camera_geometry.height.max(1),
     };
-    let mut header_info: Vec<(String, String)> = probe
-        .header
+    let header = probe.header;
+    let mut header_info: Vec<(String, String)> = header
         .header_dict
         .iter()
         .map(|(k, v)| (k.clone(), v.trim().to_string()))
@@ -315,6 +424,7 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         Arc::clone(&bytes),
         geometry,
         SliceBy::Time(33_333),
+        header,
     ));
 
     Ok(ViewerState {
@@ -333,6 +443,9 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         bias_offsets: vec![],
         playback_state: PlaybackState::new_file(),
         fps_tracker: FpsTracker::new(),
+        first_timestamp: None,
+        last_timestamp: None,
+        recorder: Arc::new(Mutex::new(recording::RecordingState::new())),
         pending_bias_load: None,
     })
 }
@@ -385,9 +498,17 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
             Some(initial_biases)
         },
         stop: false,
+        recorder: None,
     }));
     let shared_task = Arc::clone(&shared);
     let generator = FrameGenerator::new(geometry);
+    
+    // Create a minimal header for camera mode
+    let header = RawFileHeader {
+        header_dict: std::collections::HashMap::new(),
+        event_type: libreeb::header::RawEventType::Evt3, // EVK4 uses EVT3
+        camera_geometry: geometry,
+    };
     let mut slice = SliceBy::Time(33_333);
 
     spawn_local(async move {
@@ -418,8 +539,17 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
                         .await;
                 }
             }
-            if let Some(batch) = camera.read_batch().await {
+            if let Some((batch, raw_bytes)) = camera.read_batch_with_bytes().await {
                 acc.append(batch);
+                
+                // If recording, append raw bytes to RecordingState.buffer
+                if let Ok(s) = shared_task.lock() {
+                    if let Some(ref recorder) = s.recorder {
+                        if let Ok(mut rec) = recorder.lock() {
+                            rec.buffer.extend_from_slice(&raw_bytes);
+                        }
+                    }
+                }
             }
             // Emit a frame when the accumulator satisfies the slice condition.
             let emit = match slice {
@@ -440,10 +570,11 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
                 } else {
                     0.0
                 };
+                let last_ts = acc.t.last().copied().unwrap_or(0);
                 let frame = generator.generate(&acc);
                 acc = libreeb::EventBatch::new();
                 if let Ok(mut s) = shared_task.lock() {
-                    s.latest_frame = Some((frame, ev, rate));
+                    s.latest_frame = Some((frame, ev, rate, last_ts));
                 }
             }
         }
@@ -454,7 +585,7 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
         height: geometry.height,
         label,
         header_info: vec![],
-        producer: Box::new(WasmCameraProducer { shared }),
+        producer: Box::new(WasmCameraProducer { shared, header }),
         texture: None,
         frame_count: 0,
         window_us: 33_333.0,
@@ -465,6 +596,9 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
         bias_defaults,
         playback_state: PlaybackState::new_camera(),
         fps_tracker: FpsTracker::new(),
+        first_timestamp: None,
+        last_timestamp: None,
+        recorder: Arc::new(Mutex::new(recording::RecordingState::new())),
         pending_bias_load: None,
     })
 }
