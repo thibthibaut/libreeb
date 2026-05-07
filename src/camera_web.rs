@@ -13,6 +13,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{UsbDevice, UsbDeviceRequestOptions};
 
+use crate::evt_reader::RawFormatDecoder;
+
 /// Log a formatted string to the browser JS console.
 macro_rules! clog {
     ($($t:tt)*) => {
@@ -507,7 +509,7 @@ impl WasmCameraReader {
         let evts: &[Evt3] = bytemuck::cast_slice(&bytes[..aligned_byte_count]);
 
         let mut batch = EventBatch::new();
-        self.decoder.decode(evts, &mut batch);
+        self.decoder.decode(evts, &mut batch, u64::MAX, usize::MAX);
         if batch.is_empty() { 
             None 
         } else {

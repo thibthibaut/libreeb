@@ -1,5 +1,5 @@
 use crate::evt_reader::RawFormatDecoder;
-use crate::{declare_raw_evt, EventsRepr};
+use crate::{declare_raw_evt, DecodeInto};
 use wide::u64x4;
 
 declare_raw_evt! {
@@ -42,7 +42,7 @@ impl RawFormatDecoder for Evt21Decoder {
         self.time_high
     }
 
-    fn decode<O: EventsRepr>(
+    fn decode<O: DecodeInto>(
         &mut self,
         raw_events: &[Self::RawEventType],
         output: &mut O,
@@ -250,7 +250,7 @@ fn expand_mask(x_buf: &mut [u16; 32], base_x: u16, mut mask: u32) -> usize {
 /// If count budget splits mid-mask, sets carry fields and returns true
 /// (word IS consumed since partial events were emitted).
 #[inline(always)]
-fn decode_one_generic<O: EventsRepr>(
+fn decode_one_generic<O: DecodeInto>(
     w: u64,
     time_high: &mut u64,
     output: &mut O,

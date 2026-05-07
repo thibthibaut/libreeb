@@ -102,7 +102,7 @@ pub enum RawFileReaderError {
     Unknown,
 }
 
-// ── EventsRepr trait ─────────────────────────────────────────────────────────
+// ── DecodeInto trait ─────────────────────────────────────────────────────────
 
 /// Trait for decoder output types.
 ///
@@ -138,13 +138,11 @@ pub enum RawFileReaderError {
 /// ```no_run
 /// # use std::io::BufReader;
 /// # use std::fs::File;
-/// # use libreeb::{make_decoder_generic, header::RawEventType, EventsRepr};
+/// # use libreeb::{make_decoder_generic, header::RawEventType, DecodeInto};
 /// # struct MyCustomOutput;
 /// # impl Default for MyCustomOutput { fn default() -> Self { MyCustomOutput } }
-/// # impl EventsRepr for MyCustomOutput {
+/// # impl DecodeInto for MyCustomOutput {
 /// #     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {}
-/// #     fn len(&self) -> usize { 0 }
-/// #     fn last_t(&self) -> Option<u64> { None }
 /// # }
 /// let file = File::open("data.raw")?;
 /// let mut decoder = make_decoder_generic::<_, MyCustomOutput>(
@@ -156,7 +154,7 @@ pub enum RawFileReaderError {
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub trait EventsRepr: Default + Send {
+pub trait DecodeInto: Default + Send {
     /// Push a single CD event.
     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64);
 
@@ -203,7 +201,7 @@ pub(crate) const STAGE_CAP: usize = 256;
 ///
 /// Reduces per-event overhead by batching writes into bulk `extend_from_soa`.
 /// The buffer stores events in SoA layout internally and flushes via the
-/// generic `EventsRepr::extend_from_soa` method.
+/// generic `DecodeInto::extend_from_soa` method.
 pub(crate) struct Stage {
     x: [u16; STAGE_CAP],
     y: [u16; STAGE_CAP],
@@ -237,9 +235,9 @@ impl Stage {
         self.len += 1;
     }
 
-    /// Flush accumulated events to any `EventsRepr` via bulk extend.
+    /// Flush accumulated events to any `DecodeInto` via bulk extend.
     #[inline(always)]
-    pub fn flush<O: EventsRepr>(&mut self, output: &mut O) {
+    pub fn flush<O: DecodeInto>(&mut self, output: &mut O) {
         if self.len > 0 {
             output.extend_from_soa(
                 &self.x[..self.len],
@@ -297,7 +295,10 @@ fn make_decoder<R: Read + Send + Sync + 'static>(
 ///
 /// This is the generic version of `make_decoder` for advanced users who want
 /// a different output format (e.g., events + triggers, histograms, etc.).
-pub fn make_decoder_generic<R: Read + Send + Sync + 'static, O: evt_repr::EventCollection + 'static>(
+pub fn make_decoder_generic<
+    R: Read + Send + Sync + 'static,
+    O: evt_repr::EventCollection + 'static,
+>(
     reader: BufReader<R>,
     event_type: RawEventType,
 ) -> Result<EventDecoder<O>, RawFileReaderError> {
@@ -425,9 +426,8 @@ impl RawFileReader {
             ))
         })?;
 
-        let decoder = make_decoder(reader, self.header.event_type).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e))
-        })?;
+        let decoder = make_decoder(reader, self.header.event_type)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
 
         Ok(PyEventDecoder { decoder })
     }
@@ -507,9 +507,18 @@ mod tests {
     }
 
     #[rstest]
-    #[case::evt3("data/gen4_evt3_hand.raw", "references/gen4_evt3_hand.raw.no_time_shift.xxh")]
-    #[case::evt21("data/claque_doigt_evt21.raw", "references/claque_doigt_evt21.raw.no_time_shift.xxh")]
-    #[case::evt2("data/blinking_leds.raw", "references/blinking_leds.raw.no_time_shift.xxh")]
+    #[case::evt3(
+        "data/gen4_evt3_hand.raw",
+        "references/gen4_evt3_hand.raw.no_time_shift.xxh"
+    )]
+    #[case::evt21(
+        "data/claque_doigt_evt21.raw",
+        "references/claque_doigt_evt21.raw.no_time_shift.xxh"
+    )]
+    #[case::evt2(
+        "data/blinking_leds.raw",
+        "references/blinking_leds.raw.no_time_shift.xxh"
+    )]
     fn test_decoder(#[case] raw_path: &str, #[case] ref_path: &str) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -582,7 +591,10 @@ mod tests {
             );
             sliced_total += batch.len();
         }
-        assert_eq!(sliced_total, total, "event count changed after time-slicing");
+        assert_eq!(
+            sliced_total, total,
+            "event count changed after time-slicing"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

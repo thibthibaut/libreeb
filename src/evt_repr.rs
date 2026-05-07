@@ -9,7 +9,7 @@
 #[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 use pyo3::prelude::*;
 
-use crate::EventsRepr;
+use crate::DecodeInto;
 
 // ── EventCD ──────────────────────────────────────────────────────────────────
 
@@ -136,7 +136,7 @@ impl Default for EventSoA {
     }
 }
 
-impl EventsRepr for EventSoA {
+impl DecodeInto for EventSoA {
     #[inline]
     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {
         self.x.push(x);
@@ -160,11 +160,21 @@ impl EventsRepr for EventSoA {
 
     #[inline]
     fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
+        let count = xs.len();
+        
+        // Reserve space once to avoid multiple reallocations
+        self.x.reserve(count);
+        self.y.reserve(count);
+        self.p.reserve(count);
+        self.t.reserve(count);
+        
+        // Extend x from slice (fast memcpy)
         self.x.extend_from_slice(xs);
-        let new_len = self.y.len() + xs.len();
-        self.y.resize(new_len, y);
-        self.p.resize(new_len, p);
-        self.t.resize(new_len, t);
+        
+        // Extend with constant values (compiler can optimize these)
+        self.y.extend(std::iter::repeat(y).take(count));
+        self.p.extend(std::iter::repeat(p).take(count));
+        self.t.extend(std::iter::repeat(t).take(count));
     }
 }
 
@@ -281,7 +291,7 @@ impl Default for EventAoS {
     }
 }
 
-impl EventsRepr for EventAoS {
+impl DecodeInto for EventAoS {
     #[inline]
     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {
         self.events.push(EventCD { x, y, p, t });
@@ -332,14 +342,14 @@ impl<'a> IntoIterator for &'a EventAoS {
 /// - Can be iterated over to access individual events
 /// - Support collection operations like `append` and `split_off`
 ///
-/// Not all `EventsRepr` implementations are collections. For example, destructive
-/// representations like histograms or time surfaces implement `EventsRepr` (to receive
+/// Not all `DecodeInto` implementations are collections. For example, destructive
+/// representations like histograms or time surfaces implement `DecodeInto` (to receive
 /// decoded events) but do NOT implement `EventCollection` (cannot iterate over past events).
 ///
 /// Types implementing this trait:
 /// - [`EventSoA`]: Structure-of-Arrays layout
 /// - [`EventAoS`]: Array-of-Structures layout
-pub trait EventCollection: EventsRepr {
+pub trait EventCollection: DecodeInto {
     /// Create a new empty collection.
     fn new() -> Self;
 
@@ -471,8 +481,8 @@ mod tests {
     #[test]
     fn test_events_repr_trait_soa() {
         let mut batch = EventSoA::new();
-        EventsRepr::push_cd(&mut batch, 10, 20, 1, 1000);
-        EventsRepr::push_cd(&mut batch, 15, 25, 0, 2000);
+        DecodeInto::push_cd(&mut batch, 10, 20, 1, 1000);
+        DecodeInto::push_cd(&mut batch, 15, 25, 0, 2000);
         
         assert_eq!(batch.len(), 2);
     }
@@ -480,8 +490,8 @@ mod tests {
     #[test]
     fn test_events_repr_trait_aos() {
         let mut batch = EventAoS::new();
-        EventsRepr::push_cd(&mut batch, 10, 20, 1, 1000);
-        EventsRepr::push_cd(&mut batch, 15, 25, 0, 2000);
+        DecodeInto::push_cd(&mut batch, 10, 20, 1, 1000);
+        DecodeInto::push_cd(&mut batch, 15, 25, 0, 2000);
         
         assert_eq!(batch.len(), 2);
         assert_eq!(batch.events[0].x, 10);

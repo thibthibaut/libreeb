@@ -1,4 +1,4 @@
-use crate::{EventsRepr, EventBatch, SliceBy};
+use crate::{DecodeInto, EventBatch, SliceBy};
 use std::io::Read;
 
 const READ_BUFFER_SIZE: usize = 262144;
@@ -13,7 +13,7 @@ struct AlignedBuffer([u8; READ_BUFFER_SIZE]);
 
 /// Internal trait implemented by format-specific decoders (Evt2, Evt21, Evt3).
 ///
-/// The `decode` method is generic over `O: EventsRepr`, allowing the same
+/// The `decode` method is generic over `O: DecodeInto`, allowing the same
 /// decoder implementation to produce different output types depending on what
 /// the caller needs (SoA batches, AoS vectors, histograms, etc.).
 ///
@@ -29,7 +29,7 @@ pub(crate) trait RawFormatDecoder: Send + Sync {
     ///
     /// - `end_time`: stop when decoded timestamp >= this (u64::MAX = no limit)
     /// - `max_events`: stop after output contains this many CD events (usize::MAX = no limit)
-    fn decode<O: EventsRepr>(
+    fn decode<O: DecodeInto>(
         &mut self,
         raw_events: &[Self::RawEventType],
         output: &mut O,
@@ -45,7 +45,7 @@ pub(crate) trait RawFormatDecoder: Send + Sync {
 
 /// Object-safe trait wrapping a RawFormatDecoder + Read source.
 /// Parameterized by output type `O` for compile-time dispatch.
-pub(crate) trait DecoderStream<O: EventsRepr>: Send + Sync {
+pub(crate) trait DecoderStream<O: DecodeInto>: Send + Sync {
     fn next_batch(&mut self, end_time: u64, max_events: usize) -> Option<O>;
     fn current_time(&self) -> u64;
 }
@@ -176,7 +176,7 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::evt_repr::EventCollec
 /// event format type, then iterate to get decoded event batches.
 ///
 /// The output type `O` defaults to [`EventBatch`] (SoA layout) but can be any
-/// type implementing [`EventsRepr`]. This is determined at compile time,
+/// type implementing [`DecodeInto`]. This is determined at compile time,
 /// allowing the compiler to fully optimize for the chosen output layout.
 ///
 /// # Slicing
@@ -265,7 +265,7 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::evt_repr::EventCollec
 /// # Type Erasure and Compile-Time Polymorphism
 ///
 /// The output type `O` is a compile-time generic parameter that must implement
-/// [`EventsRepr`](crate::EventsRepr). By default, it's [`EventBatch`] (SoA format).
+/// [`DecodeInto`](crate::DecodeInto). By default, it's [`EventBatch`] (SoA format).
 ///
 /// For most users, the default is fine — just use [`RawFileReader::decoder()`]
 /// which returns `EventDecoder<EventBatch>`.
@@ -274,13 +274,11 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::evt_repr::EventCollec
 ///
 /// ```no_run
 /// # use std::io::{BufReader, Cursor};
-/// # use libreeb::{make_decoder_generic, header::RawEventType, EventsRepr};
+/// # use libreeb::{make_decoder_generic, header::RawEventType, DecodeInto};
 /// # struct MyOutput;
 /// # impl Default for MyOutput { fn default() -> Self { MyOutput } }
-/// # impl EventsRepr for MyOutput {
+/// # impl DecodeInto for MyOutput {
 /// #     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {}
-/// #     fn len(&self) -> usize { 0 }
-/// #     fn last_t(&self) -> Option<u64> { None }
 /// # }
 /// let cursor = Cursor::new(vec![/* raw data */]);
 /// let mut decoder = make_decoder_generic::<_, MyOutput>(
@@ -292,19 +290,19 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::evt_repr::EventCollec
 ///     // output is MyOutput, not EventBatch
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
+/// ```DecodeInto
 ///
 /// The type erasure happens via the `DecoderStream<O>` trait, which is boxed
 /// internally. This allows different format decoders (EVT2, EVT21, EVT3) to be
 /// used interchangeably while maintaining compile-time polymorphism for the
 /// output type.
-pub struct EventDecoder<O: EventsRepr = EventBatch> {
+pub struct EventDecoder<O: DecodeInto = EventBatch> {
     stream: Box<dyn DecoderStream<O>>,
     slice_by: SliceBy,
     slice_anchor: Option<u64>,
 }
 
-impl<O: EventsRepr> EventDecoder<O> {
+impl<O: DecodeInto> EventDecoder<O> {
     /// Create a new decoder from a boxed stream (internal use).
     pub(crate) fn from_stream(stream: Box<dyn DecoderStream<O>>) -> Self {
         EventDecoder {

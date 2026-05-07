@@ -1,6 +1,6 @@
 use crate::declare_raw_evt;
 use crate::evt_reader::RawFormatDecoder;
-use crate::EventsRepr;
+use crate::DecodeInto;
 
 // EVT2 raw events definition, the layout is:
 //
@@ -47,7 +47,7 @@ impl RawFormatDecoder for Evt2Decoder {
         self.current_time
     }
 
-    fn decode<O: EventsRepr>(
+    fn decode<O: DecodeInto>(
         &mut self,
         raw_events: &[Self::RawEventType],
         output: &mut O,

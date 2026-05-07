@@ -539,8 +539,8 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
                         .await;
                 }
             }
-            if let Some((batch, raw_bytes)) = camera.read_batch_with_bytes().await {
-                acc.append(batch);
+            if let Some((mut batch, raw_bytes)) = camera.read_batch_with_bytes().await {
+                acc.append(&mut batch);
                 
                 // If recording, append raw bytes to RecordingState.buffer
                 if let Ok(s) = shared_task.lock() {
@@ -561,6 +561,7 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
                     (acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= us)
                         || acc.len() >= n
                 }
+                SliceBy::Bytes => false, // Not used in live viewer
             };
             if emit && !acc.is_empty() {
                 let ev = acc.len();
