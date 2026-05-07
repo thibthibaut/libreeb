@@ -3,39 +3,46 @@
 use super::{calculate_rate, Producer};
 use crate::recording::RecordingState;
 use image::RgbImage;
-use libreeb::{header::{CameraGeometry, RawFileHeader}, processors::FrameGenerator, EventBatch, RawFileReader, SliceBy, SliceIter};
+use libreeb::{
+    header::{CameraGeometry, RawFileHeader},
+    processors::FrameGenerator, EventBatch, EventDecoder, RawFileReader, SliceBy,
+};
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use web_time::Instant;
-
-type BoxBatchIter = Box<dyn Iterator<Item = EventBatch> + Send + Sync + 'static>;
 
 pub struct WasmFileProducer {
     bytes: Arc<[u8]>,
     header: RawFileHeader,
     generator: FrameGenerator,
-    slicer: SliceIter<BoxBatchIter>,
+    decoder: EventDecoder<EventBatch>,
     slice: SliceBy,
-    
+
     // Timing state for real-time playback
     playback_speed: f32,
     playback_start: Option<Instant>,
     first_event_ts: Option<u64>,
     buffered_batch: Option<EventBatch>,
-    
-    // Recording state  
+
+    // Recording state
     recorder: Option<Arc<Mutex<RecordingState>>>,
 }
 
 impl WasmFileProducer {
-    pub fn new(bytes: Arc<[u8]>, geometry: CameraGeometry, slice: SliceBy, header: RawFileHeader) -> Self {
-        let slicer = Self::make_slicer(Arc::clone(&bytes), slice);
+    pub fn new(
+        bytes: Arc<[u8]>,
+        geometry: CameraGeometry,
+        slice: SliceBy,
+        header: RawFileHeader,
+    ) -> Self {
+        let decoder = Self::make_decoder(Arc::clone(&bytes), slice);
         WasmFileProducer {
             bytes,
             header,
             generator: FrameGenerator::new(geometry),
-            slicer,
+            decoder,
             slice,
-            playback_speed: 1.0, // Default: real-time
+            playback_speed: 1.0,
             playback_start: None,
             first_event_ts: None,
             buffered_batch: None,
@@ -43,15 +50,18 @@ impl WasmFileProducer {
         }
     }
 
-    fn make_slicer(bytes: Arc<[u8]>, slice: SliceBy) -> SliceIter<BoxBatchIter> {
-        match RawFileReader::from_reader(std::io::Cursor::new(bytes)) {
-            Ok(r) => SliceIter::new(r.into_event_iter(), slice),
+    fn make_decoder(bytes: Arc<[u8]>, slice: SliceBy) -> EventDecoder<EventBatch> {
+        match RawFileReader::from_reader(Cursor::new(bytes)) {
+            Ok(r) => {
+                let mut dec = r.into_decoder();
+                dec.set_slice_by(Some(slice));
+                dec
+            }
             Err(e) => {
-                web_sys::console::error_1(&format!("WasmFileProducer reader error: {e}").into());
-                SliceIter::new(
-                    Box::new(std::iter::empty::<EventBatch>()) as BoxBatchIter,
-                    slice,
-                )
+                web_sys::console::error_1(
+                    &format!("WasmFileProducer decoder error: {e}").into(),
+                );
+                panic!("Cannot create decoder: {e}");
             }
         }
     }
@@ -67,22 +77,15 @@ impl WasmFileProducer {
             return true;
         };
 
-        // Calculate how much event-time has passed
         let elapsed_event_us = batch_ts - first_ts;
-
-        // Calculate target real-world delay
-        // At 1x speed: elapsed_event_us microseconds should take elapsed_event_us real microseconds
-        // At 0.01x speed: should take 100x longer
-        // At 3x speed: should take 1/3 the time
         let target_real_us = (elapsed_event_us as f64 / self.playback_speed as f64) as u64;
         let target_time = playback_start + std::time::Duration::from_micros(target_real_us);
 
-        // Display if we've reached the target time
         Instant::now() >= target_time
     }
 
     fn reset_playback(&mut self) {
-        self.slicer = Self::make_slicer(Arc::clone(&self.bytes), self.slice);
+        self.decoder = Self::make_decoder(Arc::clone(&self.bytes), self.slice);
         self.playback_start = None;
         self.first_event_ts = None;
         self.buffered_batch = None;
@@ -110,11 +113,10 @@ impl Producer for WasmFileProducer {
 
         // Get next non-empty batch
         let batch = loop {
-            match self.slicer.next() {
+            match self.decoder.next() {
                 Some(b) if !b.is_empty() => break b,
-                Some(_) => continue, // empty batch (all TIME_HIGH) — keep going
+                Some(_) => continue,
                 None => {
-                    // EOF: restart on next call
                     self.reset_playback();
                     return None;
                 }
@@ -144,7 +146,6 @@ impl Producer for WasmFileProducer {
 
     fn set_playback_speed(&mut self, speed: f32) {
         self.playback_speed = speed.clamp(0.003, 3.0);
-        // Reset timing so playback continues from current position at new speed
         self.playback_start = None;
         self.first_event_ts = None;
     }
@@ -156,40 +157,39 @@ impl Producer for WasmFileProducer {
     fn stop(&mut self) {
         // No-op for file mode
     }
-    
+
     fn get_header(&self) -> &RawFileHeader {
         &self.header
     }
-    
+
     fn start_recording(&mut self, recorder: Arc<Mutex<RecordingState>>) {
         self.recorder = Some(recorder.clone());
-        
+
         // For file mode, copy all event data (everything after header) immediately
         if let Ok(mut rec) = recorder.lock() {
-            // Find where header ends (first line that doesn't start with %)
             let mut header_end = 0;
-            
             for (i, &byte) in self.bytes.iter().enumerate() {
                 if byte == b'\n' {
                     let next_pos = i + 1;
                     if next_pos < self.bytes.len() && self.bytes[next_pos] != b'%' {
-                        // Found first non-% line - event data starts here
                         header_end = next_pos;
                         break;
                     }
                 }
             }
-            
-            // Copy all event bytes to RecordingState.buffer
             if header_end < self.bytes.len() {
                 rec.buffer.extend_from_slice(&self.bytes[header_end..]);
                 web_sys::console::log_1(
-                    &format!("File recording: copied {} bytes of event data", self.bytes.len() - header_end).into()
+                    &format!(
+                        "File recording: copied {} bytes of event data",
+                        self.bytes.len() - header_end
+                    )
+                    .into(),
                 );
             }
         }
     }
-    
+
     fn stop_recording(&mut self) {
         self.recorder = None;
     }

@@ -28,11 +28,10 @@ fn bench_decode_only(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(name), &bytes, |b, data| {
             b.iter(|| {
-                // Arc::clone is a refcount bump — no data copy.
                 let cursor = Cursor::new(Arc::clone(data));
                 let mut reader =
                     RawFileReader::from_reader(cursor).expect("Failed to parse header");
-                reader.read_events().count()
+                std::iter::from_fn(|| reader.decoder().next()).count()
             })
         });
     }
@@ -59,7 +58,7 @@ fn bench_full_pipeline(c: &mut Criterion) {
             b.iter(|| {
                 let mut reader =
                     RawFileReader::new(std::path::Path::new(path)).expect("Failed to open file");
-                reader.read_events().count()
+                std::iter::from_fn(|| reader.decoder().next()).count()
             })
         });
     }

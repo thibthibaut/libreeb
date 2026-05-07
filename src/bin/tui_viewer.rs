@@ -133,7 +133,7 @@ impl AppState {
         
         // Ensure we have at least one event to anchor the window
         while acc.is_empty() {
-            match self.reader.read_events().next() {
+            match self.reader.decoder().next() {
                 Some(batch) => acc = batch,
                 None => {
                     // End of file - need to loop back to start
@@ -161,7 +161,7 @@ impl AppState {
                 self.overflow = acc.split_off(split);
                 break;
             }
-            match self.reader.read_events().next() {
+            match self.reader.decoder().next() {
                 Some(batch) => acc.append(batch),
                 None => {
                     // End of file with remaining events

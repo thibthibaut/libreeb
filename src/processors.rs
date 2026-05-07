@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(reader.header.camera_geometry.width, w);
         assert_eq!(reader.header.camera_geometry.height, h);
 
-        let batch = reader.read_events().next().expect("no batches in file");
+        let batch = reader.decoder().next().expect("no batches in file");
         let gen = FrameGenerator::new(reader.header.camera_geometry);
         let frame = gen.generate(&batch);
         assert_eq!(frame.dimensions(), (w, h));

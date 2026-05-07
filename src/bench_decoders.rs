@@ -8,8 +8,8 @@ fn benchmark(filepath: &str) -> usize {
     let mut reader = RawFileReader::new(path).expect("Failed to open file");
 
     let mut total = 0;
-    for _event in reader.read_events() {
-        total += 1;
+    while let Some(batch) = reader.decoder().next() {
+        total += batch.len();
     }
 
     total
