@@ -1,5 +1,5 @@
-use crate::evt_reader::FormatDecoder;
-use crate::{declare_raw_evt, DecoderOutput, Stage};
+use crate::evt_reader::RawFormatDecoder;
+use crate::{declare_raw_evt, EventsRepr, Stage};
 use wide::u16x8;
 
 declare_raw_evt! {
@@ -36,7 +36,7 @@ pub struct Evt3Decoder {
     y: u16,
 }
 
-impl FormatDecoder for Evt3Decoder {
+impl RawFormatDecoder for Evt3Decoder {
     type RawEventType = Evt3;
 
     fn new() -> Self {
@@ -55,7 +55,7 @@ impl FormatDecoder for Evt3Decoder {
         self.time
     }
 
-    fn decode<O: DecoderOutput>(
+    fn decode<O: EventsRepr>(
         &mut self,
         raw_events: &[Evt3],
         output: &mut O,
@@ -148,7 +148,7 @@ impl FormatDecoder for Evt3Decoder {
             i += 1;
 
             // Fast path: EVT_ADDR_X (type 0x2, words 0x2000..0x3000)
-            if w >= 0x2000 && w < 0x3000 {
+            if (0x2000..0x3000).contains(&w) {
                 emit!(w & 0x07FF, cur_y, (w >> 11) as u8 & 1, cur_t);
 
                 // Try SIMD again if we have a run
@@ -189,7 +189,7 @@ impl FormatDecoder for Evt3Decoder {
                 // Peek: if next word is EVT_ADDR_X, emit immediately
                 if i < n {
                     let next = words[i];
-                    if next >= 0x2000 && next < 0x3000 {
+                    if (0x2000..0x3000).contains(&next) {
                         emit!(next & 0x07FF, cur_y, (next >> 11) as u8 & 1, cur_t);
                         i += 1;
                     }

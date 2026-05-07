@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use rusb::{DeviceHandle, GlobalContext};
-use crate::{biases::BIAS_TABLE, evt3::Evt3Decoder, evt_reader::FormatDecoder, EventBatch};
+use crate::{biases::BIAS_TABLE, evt3::Evt3Decoder, evt_reader::RawFormatDecoder, EventBatch};
 
 // ── Treuzell protocol constants ───────────────────────────────────────────────
 
