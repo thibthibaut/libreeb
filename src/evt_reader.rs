@@ -205,10 +205,10 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: EventsRepr> DecoderStream<O>
 /// - `SliceBy::Time(us)` — batches span a fixed time window
 /// - `SliceBy::Count(n)` — batches contain up to n events
 /// - `SliceBy::Both(us, n)` — whichever limit is hit first
-/// - `SliceBy::Bytes(n)` — decode in chunks of ~n bytes (default: 256 KB)
+/// - `SliceBy::Bytes` — decode in fixed 256 KB chunks (default, fastest)
 ///
-/// The default mode is `Bytes(256 * 1024)`, which processes data in buffer-sized
-/// chunks without enforcing specific time or count constraints. This is the fastest
+/// The default mode is `Bytes`, which processes data in buffer-sized
+/// chunks (256 KB) without enforcing specific time or count constraints. This is the fastest
 /// mode for streaming through data when you don't need precise batch boundaries.
 ///
 /// # Examples
@@ -298,15 +298,12 @@ pub struct EventDecoder<O: EventsRepr = EventBatch> {
     slice_anchor: Option<u64>,
 }
 
-/// Default chunk size for `SliceBy::Bytes` mode (256 KB).
-pub const DEFAULT_CHUNK_BYTES: usize = 256 * 1024;
-
 impl<O: EventsRepr> EventDecoder<O> {
     /// Create a new decoder from a boxed stream (internal use).
     pub(crate) fn from_stream(stream: Box<dyn DecoderStream<O>>) -> Self {
         EventDecoder {
             stream,
-            slice_by: SliceBy::Bytes(DEFAULT_CHUNK_BYTES),
+            slice_by: SliceBy::Bytes,
             slice_anchor: None,
         }
     }
@@ -328,8 +325,8 @@ impl<O: EventsRepr> EventDecoder<O> {
     /// // Count-based slicing: 10k events per batch
     /// decoder.set_slice_by(SliceBy::Count(10_000));
     ///
-    /// // Chunked decoding: ~256 KB of raw data per batch
-    /// decoder.set_slice_by(SliceBy::Bytes(256 * 1024));
+    /// // Chunked decoding: fixed 256 KB chunks (fastest)
+    /// decoder.set_slice_by(SliceBy::Bytes);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn set_slice_by(&mut self, slice_by: SliceBy) {
@@ -340,7 +337,7 @@ impl<O: EventsRepr> EventDecoder<O> {
     /// Compute (end_time, max_events) for the current slice.
     fn budget(&self) -> (u64, usize) {
         match self.slice_by {
-            SliceBy::Bytes(_) => (u64::MAX, usize::MAX),
+            SliceBy::Bytes => (u64::MAX, usize::MAX),
             SliceBy::Time(us) => {
                 let end = self
                     .slice_anchor
@@ -363,7 +360,7 @@ impl<O: EventsRepr> Iterator for EventDecoder<O> {
 
     fn next(&mut self) -> Option<O> {
         // Bytes mode: just decode one full chunk without time/count constraints
-        if matches!(self.slice_by, SliceBy::Bytes(_)) {
+        if matches!(self.slice_by, SliceBy::Bytes) {
             return self.stream.next_batch(u64::MAX, usize::MAX);
         }
 
