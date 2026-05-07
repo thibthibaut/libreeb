@@ -19,11 +19,15 @@ pub use evt3::Evt3;
 // Re-export the public EventDecoder (the user-facing API)
 pub use evt_reader::EventDecoder;
 
+// Re-export event representation types
+pub use evt_repr::{EventAoS, EventBatch, EventCD, EventSoA};
+
 pub mod biases;
 pub mod evt2;
 pub mod evt2_1;
 pub mod evt3;
 pub mod evt_reader;
+pub mod evt_repr;
 pub mod header;
 mod macros;
 pub mod processors;
@@ -96,24 +100,6 @@ pub enum RawFileReaderError {
 
     #[error("An unknown error occurred")]
     Unknown,
-}
-
-// ── EventCD ──────────────────────────────────────────────────────────────────
-
-/// A single decoded Change Detection (CD) event.
-///
-/// CD events are the primary output of an event-based camera: each one records
-/// that a pixel at (`x`, `y`) crossed a log-intensity threshold at time `t`,
-/// with polarity `p` (1 = brighter, 0 = darker).
-///
-/// Timestamps are in microseconds relative to the start of the recording.
-#[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EventCD {
-    pub x: u16,
-    pub y: u16,
-    pub p: u8,
-    pub t: u64,
 }
 
 // ── EventsRepr trait ─────────────────────────────────────────────────────────
@@ -307,181 +293,6 @@ impl Stage {
         self.p[base..base + 8].copy_from_slice(&p);
         self.t[base..base + 8].fill(t);
         self.len += 8;
-    }
-}
-
-// ── EventBatch ───────────────────────────────────────────────────────────────
-
-/// A batch of [`EventCD`] events in Structure-of-Arrays layout.
-///
-/// This is the fundamental unit returned by all event iterators. The four
-/// parallel vectors are always the same length.
-#[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
-#[derive(Debug, Clone)]
-pub struct EventBatch {
-    pub x: Vec<u16>,
-    pub y: Vec<u16>,
-    pub p: Vec<u8>,
-    pub t: Vec<u64>,
-}
-
-impl EventBatch {
-    pub fn new() -> Self {
-        EventBatch {
-            x: Vec::new(),
-            y: Vec::new(),
-            p: Vec::new(),
-            t: Vec::new(),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.x.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.x.is_empty()
-    }
-
-    pub fn with_capacity(cap: usize) -> Self {
-        EventBatch {
-            x: Vec::with_capacity(cap),
-            y: Vec::with_capacity(cap),
-            p: Vec::with_capacity(cap),
-            t: Vec::with_capacity(cap),
-        }
-    }
-
-    /// Push from separate field values.
-    #[inline]
-    pub fn push(&mut self, x: u16, y: u16, t: u64, p: u8) {
-        self.x.push(x);
-        self.y.push(y);
-        self.p.push(p);
-        self.t.push(t);
-    }
-
-    /// Push a single [`EventCD`] (convenience wrapper).
-    #[inline]
-    pub fn push_event(&mut self, evt: EventCD) {
-        self.push(evt.x, evt.y, evt.t, evt.p);
-    }
-
-    /// Append all events from `other` into `self`.
-    pub fn append(&mut self, mut other: EventBatch) {
-        self.x.append(&mut other.x);
-        self.y.append(&mut other.y);
-        self.p.append(&mut other.p);
-        self.t.append(&mut other.t);
-    }
-
-    /// Split at index `at`. `self` retains `[0..at)`, returns `[at..)`.
-    pub fn split_off(&mut self, at: usize) -> EventBatch {
-        EventBatch {
-            x: self.x.split_off(at),
-            y: self.y.split_off(at),
-            p: self.p.split_off(at),
-            t: self.t.split_off(at),
-        }
-    }
-}
-
-impl Default for EventBatch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EventsRepr for EventBatch {
-    #[inline]
-    fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {
-        self.x.push(x);
-        self.y.push(y);
-        self.p.push(p);
-        self.t.push(t);
-    }
-
-    #[inline]
-    fn extend_from_soa(&mut self, x: &[u16], y: &[u16], p: &[u8], t: &[u64]) {
-        self.x.extend_from_slice(x);
-        self.y.extend_from_slice(y);
-        self.p.extend_from_slice(p);
-        self.t.extend_from_slice(t);
-    }
-
-    #[inline]
-    fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
-        self.x.extend_from_slice(xs);
-        let new_len = self.y.len() + xs.len();
-        self.y.resize(new_len, y);
-        self.p.resize(new_len, p);
-        self.t.resize(new_len, t);
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.x.len()
-    }
-
-    #[inline]
-    fn last_t(&self) -> Option<u64> {
-        self.t.last().copied()
-    }
-
-    #[inline]
-    fn reserve(&mut self, n: usize) {
-        self.x.reserve(n);
-        self.y.reserve(n);
-        self.p.reserve(n);
-        self.t.reserve(n);
-    }
-}
-
-pub struct EventBatchIter<'a> {
-    batch: &'a EventBatch,
-    index: usize,
-}
-
-impl<'a> Iterator for EventBatchIter<'a> {
-    type Item = EventCD;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.batch.len() {
-            let i = self.index;
-            self.index += 1;
-            Some(EventCD {
-                x: self.batch.x[i],
-                y: self.batch.y[i],
-                p: self.batch.p[i],
-                t: self.batch.t[i],
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a EventBatch {
-    type Item = EventCD;
-    type IntoIter = EventBatchIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        EventBatchIter {
-            batch: self,
-            index: 0,
-        }
-    }
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
-#[pymethods]
-impl EventBatch {
-    fn __len__(&self) -> usize {
-        self.len()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("EventBatch(len={})", self.len())
     }
 }
 
