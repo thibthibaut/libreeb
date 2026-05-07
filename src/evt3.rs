@@ -147,16 +147,18 @@ impl RawFormatDecoder for Evt3Decoder {
 
         // ── Scalar path: process remaining words one at a time ───────────
         while i < n {
-            // Budget check (once per iteration)
-            if decoded_count + stage.len() >= max_events {
-                break;
-            }
-
             let w = words[i];
             i += 1;
 
             // Fast path: EVT_ADDR_X (type 0x2, words 0x2000..0x3000)
-            if (0x2000..0x3000).contains(&w) {
+            // This is the most common case, so optimize it first
+            if w >= 0x2000 && w < 0x3000 {
+                // Check budget before emitting
+                if decoded_count + stage.len() >= max_events {
+                    i -= 1; // Back up to reprocess this word
+                    break;
+                }
+                
                 emit!(w & 0x07FF, cur_y, (w >> 11) as u8 & 1, cur_t);
 
                 // Try SIMD again if we have a run
@@ -196,16 +198,20 @@ impl RawFormatDecoder for Evt3Decoder {
                 // Peek: if next word is EVT_ADDR_X, emit immediately
                 if i < n {
                     let next = words[i];
-                    if (0x2000..0x3000).contains(&next) {
-                        emit!(next & 0x07FF, cur_y, (next >> 11) as u8 & 1, cur_t);
-                        i += 1;
+                    if next >= 0x2000 && next < 0x3000 {
+                        if decoded_count + stage.len() < max_events {
+                            emit!(next & 0x07FF, cur_y, (next >> 11) as u8 & 1, cur_t);
+                            i += 1;
+                        }
                     }
                 }
                 continue;
             }
 
-            // Other types: match on top 4 bits
-            match (w >> 12) as u8 {
+            // Less common types: match on top 4 bits
+            let event_type = (w >> 12) as u8;
+            
+            match event_type {
                 VECT_BASE_X => {
                     cur_pol = (w >> 11) as u8 & 1;
                     cur_x = w & 0x07FF;
@@ -213,18 +219,32 @@ impl RawFormatDecoder for Evt3Decoder {
                 VECT_12 => {
                     let mut mask = (w & 0x0FFF) as u32;
                     while mask != 0 {
+                        if decoded_count + stage.len() >= max_events {
+                            i -= 1; // Back up
+                            break;
+                        }
                         let bit = mask.trailing_zeros() as u16;
                         mask &= mask - 1;
                         emit!(cur_x + bit, cur_y, cur_pol, cur_t);
+                    }
+                    if decoded_count + stage.len() >= max_events {
+                        break;
                     }
                     cur_x += 12;
                 }
                 VECT_8 => {
                     let mut mask = (w & 0x00FF) as u32;
                     while mask != 0 {
+                        if decoded_count + stage.len() >= max_events {
+                            i -= 1; // Back up
+                            break;
+                        }
                         let bit = mask.trailing_zeros() as u16;
                         mask &= mask - 1;
                         emit!(cur_x + bit, cur_y, cur_pol, cur_t);
+                    }
+                    if decoded_count + stage.len() >= max_events {
+                        break;
                     }
                     cur_x += 8;
                 }
