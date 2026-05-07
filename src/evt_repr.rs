@@ -158,23 +158,29 @@ impl DecodeInto for EventSoA {
         self.t.extend_from_slice(t);
     }
 
-    #[inline]
+    #[inline(always)]
     fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
         let count = xs.len();
+        if count == 0 {
+            return;
+        }
         
-        // Reserve space once to avoid multiple reallocations
+        // Reserve space once
+        let current_len = self.x.len();
+        let new_len = current_len + count;
+        
         self.x.reserve(count);
         self.y.reserve(count);
         self.p.reserve(count);
         self.t.reserve(count);
         
-        // Extend x from slice (fast memcpy)
+        // Fast path: extend x with memcpy
         self.x.extend_from_slice(xs);
         
-        // Extend with constant values (compiler can optimize these)
-        self.y.extend(std::iter::repeat(y).take(count));
-        self.p.extend(std::iter::repeat(p).take(count));
-        self.t.extend(std::iter::repeat(t).take(count));
+        // Resize and fill with constant values - compiler optimizes these to memset-like operations
+        self.y.resize(new_len, y);
+        self.p.resize(new_len, p);
+        self.t.resize(new_len, t);
     }
 }
 
