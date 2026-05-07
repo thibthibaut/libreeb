@@ -1,4 +1,4 @@
-use evt_reader::EvtReader;
+use evt_reader::FormatReader;
 use std::io::{self, BufReader, Read};
 use thiserror::Error;
 
@@ -11,20 +11,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// Re-export decoders as public
-pub use evt2::*;
-pub use evt2_1::*;
-pub use evt3::*;
+// Re-export decoder raw event types as public
+pub use evt2::Evt2;
+pub use evt2_1::Evt21;
+pub use evt3::Evt3;
+
+// Re-export the public EventDecoder (the user-facing API)
+pub use evt_reader::EventDecoder;
 
 pub mod biases;
 pub mod evt2;
 pub mod evt2_1;
 pub mod evt3;
-mod evt_reader;
+pub mod evt_reader;
 pub mod header;
 mod macros;
 pub mod processors;
-pub mod slicer;
 pub mod tee_reader;
 
 // Camera module: native uses rusb, WASM uses WebUSB
@@ -39,9 +41,22 @@ pub use camera::CameraReader;
 pub use camera_web::WasmCameraReader;
 
 pub use header::{CameraGeometry, RawEventType, RawFileHeader};
-pub use slicer::{SliceBy, SliceIter};
 
-// Error types
+// ── SliceBy ──────────────────────────────────────────────────────────────────
+
+/// Slicing configuration for event streams.
+#[derive(Clone, Copy, Debug)]
+pub enum SliceBy {
+    /// Slice by time in microseconds.
+    Time(u64),
+    /// Slice by count of events.
+    Count(usize),
+    /// Slice by whichever limit is reached first: time or count.
+    Both(u64, usize),
+}
+
+// ── Error types ──────────────────────────────────────────────────────────────
+
 #[derive(Error, Debug)]
 pub enum RawFileReaderError {
     #[cfg(not(target_arch = "wasm32"))]
@@ -70,6 +85,8 @@ pub enum RawFileReaderError {
     Unknown,
 }
 
+// ── EventCD ──────────────────────────────────────────────────────────────────
+
 /// A single decoded Change Detection (CD) event.
 ///
 /// CD events are the primary output of an event-based camera: each one records
@@ -86,9 +103,164 @@ pub struct EventCD {
     pub t: u64,
 }
 
+// ── DecoderOutput trait ──────────────────────────────────────────────────────
+
+/// Trait for decoder output types.
+///
+/// Defines how decoded CD events are accumulated. `EventBatch` (SoA layout) is
+/// the primary implementation. Future implementations could include:
+/// - `Vec<EventCD>` (AoS layout)
+/// - Events + external triggers bundle
+/// - Histograms / time-surface accumulators
+///
+/// The trait provides default implementations for bulk methods that delegate to
+/// `push_cd`. Performance-critical types (like `EventBatch`) override these
+/// with optimized bulk operations.
+pub trait DecoderOutput: Default + Send {
+    /// Push a single CD event.
+    fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64);
+
+    /// Bulk push from SoA slices (all slices must be the same length).
+    ///
+    /// Default iterates and calls `push_cd`. `EventBatch` overrides with memcpy.
+    #[inline]
+    fn extend_from_soa(&mut self, x: &[u16], y: &[u16], p: &[u8], t: &[u64]) {
+        for i in 0..x.len() {
+            self.push_cd(x[i], y[i], p[i], t[i]);
+        }
+    }
+
+    /// Bulk push where only x varies; y, p, t are constant across the group.
+    ///
+    /// Common pattern in EVT21 (mask expansion) and vectorized EVT3 events.
+    /// Default iterates; `EventBatch` overrides with `extend_from_slice` + `resize`.
+    #[inline]
+    fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
+        for &x in xs {
+            self.push_cd(x, y, p, t);
+        }
+    }
+
+    // ── Optional event types (default: discard) ────────────────────────
+
+    /// Push an external trigger event.
+    ///
+    /// - `channel`: trigger channel/ID (0–15 in EVT3, 0–31 in EVT2/EVT21)
+    /// - `value`: trigger value/polarity (0 or 1)
+    /// - `t`: timestamp in microseconds
+    ///
+    /// Default implementation discards the event. Override in output types
+    /// that need trigger correlation (e.g. `EventsWithTriggers`).
+    #[inline]
+    fn push_trigger(&mut self, _channel: u8, _value: u8, _t: u64) {}
+
+    // ── Bookkeeping ──────────────────────────────────────────────────
+
+    /// Number of CD events accumulated so far.
+    ///
+    /// Triggers and other non-CD events are NOT counted. This value drives
+    /// slice budget decisions (max_events).
+    fn len(&self) -> usize;
+
+    /// Whether the output contains no CD events.
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Timestamp of the last CD event, or `None` if empty.
+    ///
+    /// Used by `EventDecoder` for time-slice anchoring.
+    fn last_t(&self) -> Option<u64>;
+
+    /// Hint to reserve capacity for approximately `n` more CD events.
+    fn reserve(&mut self, n: usize);
+}
+
+// ── Stage: fixed-size stack buffer for batching events ───────────────────────
+
+pub(crate) const STAGE_CAP: usize = 256;
+
+/// Stack-local staging buffer for event accumulation.
+///
+/// Reduces per-event overhead by batching writes into bulk `extend_from_soa`.
+/// The buffer stores events in SoA layout internally and flushes via the
+/// generic `DecoderOutput::extend_from_soa` method.
+pub(crate) struct Stage {
+    x: [u16; STAGE_CAP],
+    y: [u16; STAGE_CAP],
+    p: [u8; STAGE_CAP],
+    t: [u64; STAGE_CAP],
+    len: usize,
+}
+
+impl Stage {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Stage {
+            x: [0; STAGE_CAP],
+            y: [0; STAGE_CAP],
+            p: [0; STAGE_CAP],
+            t: [0; STAGE_CAP],
+            len: 0,
+        }
+    }
+
+    /// Push a single event without bounds checking.
+    /// Caller must ensure buffer is not full.
+    #[inline(always)]
+    pub fn push_unchecked(&mut self, x: u16, y: u16, p: u8, t: u64) {
+        unsafe {
+            *self.x.get_unchecked_mut(self.len) = x;
+            *self.y.get_unchecked_mut(self.len) = y;
+            *self.p.get_unchecked_mut(self.len) = p;
+            *self.t.get_unchecked_mut(self.len) = t;
+        }
+        self.len += 1;
+    }
+
+    /// Flush accumulated events to any `DecoderOutput` via bulk extend.
+    #[inline(always)]
+    pub fn flush<O: DecoderOutput>(&mut self, output: &mut O) {
+        if self.len > 0 {
+            output.extend_from_soa(
+                &self.x[..self.len],
+                &self.y[..self.len],
+                &self.p[..self.len],
+                &self.t[..self.len],
+            );
+            self.len = 0;
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_full(&self) -> bool {
+        self.len >= STAGE_CAP
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Push 8 events at once (from SIMD-extracted arrays).
+    /// y and t are constant across all 8 events.
+    #[inline(always)]
+    pub fn push_8(&mut self, x: [u16; 8], y: u16, p: [u8; 8], t: u64) {
+        let base = self.len;
+        self.x[base..base + 8].copy_from_slice(&x);
+        self.y[base..base + 8].fill(y);
+        self.p[base..base + 8].copy_from_slice(&p);
+        self.t[base..base + 8].fill(t);
+        self.len += 8;
+    }
+}
+
+// ── EventBatch ───────────────────────────────────────────────────────────────
+
 /// A batch of [`EventCD`] events in Structure-of-Arrays layout.
 ///
-/// This is the fundamental unit returned by all event iterators.  The four
+/// This is the fundamental unit returned by all event iterators. The four
 /// parallel vectors are always the same length.
 #[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
 #[derive(Debug, Clone)]
@@ -126,26 +298,13 @@ impl EventBatch {
         }
     }
 
-    /// Push from separate field values (used by decoders for maximum efficiency).
+    /// Push from separate field values.
     #[inline]
     pub fn push(&mut self, x: u16, y: u16, t: u64, p: u8) {
         self.x.push(x);
         self.y.push(y);
         self.p.push(p);
         self.t.push(t);
-    }
-
-    /// Bulk-push `n` events from SIMD-extracted arrays, with constant `y` and `t`.
-    ///
-    /// `x_arr` and `p_arr` are `u16` slices (as produced by `wide::u16x8::to_array()`).
-    /// Polarity values in `p_arr` must be 0 or 1 — they are narrowed to `u8` on insert.
-    #[inline]
-    pub fn push_bulk(&mut self, x_arr: &[u16], p_arr: &[u16], y: u16, t: u64, n: usize) {
-        let new_len = self.x.len() + n;
-        self.x.extend_from_slice(&x_arr[..n]);
-        self.y.resize(new_len, y);
-        self.p.extend(p_arr[..n].iter().map(|&v| v as u8));
-        self.t.resize(new_len, t);
     }
 
     /// Push a single [`EventCD`] (convenience wrapper).
@@ -162,7 +321,7 @@ impl EventBatch {
         self.t.append(&mut other.t);
     }
 
-    /// Split at index `at`.  `self` retains `[0..at)`, returns `[at..)`.
+    /// Split at index `at`. `self` retains `[0..at)`, returns `[at..)`.
     pub fn split_off(&mut self, at: usize) -> EventBatch {
         EventBatch {
             x: self.x.split_off(at),
@@ -170,6 +329,57 @@ impl EventBatch {
             p: self.p.split_off(at),
             t: self.t.split_off(at),
         }
+    }
+}
+
+impl Default for EventBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DecoderOutput for EventBatch {
+    #[inline]
+    fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {
+        self.x.push(x);
+        self.y.push(y);
+        self.p.push(p);
+        self.t.push(t);
+    }
+
+    #[inline]
+    fn extend_from_soa(&mut self, x: &[u16], y: &[u16], p: &[u8], t: &[u64]) {
+        self.x.extend_from_slice(x);
+        self.y.extend_from_slice(y);
+        self.p.extend_from_slice(p);
+        self.t.extend_from_slice(t);
+    }
+
+    #[inline]
+    fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
+        self.x.extend_from_slice(xs);
+        let new_len = self.y.len() + xs.len();
+        self.y.resize(new_len, y);
+        self.p.resize(new_len, p);
+        self.t.resize(new_len, t);
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.x.len()
+    }
+
+    #[inline]
+    fn last_t(&self) -> Option<u64> {
+        self.t.last().copied()
+    }
+
+    #[inline]
+    fn reserve(&mut self, n: usize) {
+        self.x.reserve(n);
+        self.y.reserve(n);
+        self.p.reserve(n);
+        self.t.reserve(n);
     }
 }
 
@@ -209,12 +419,6 @@ impl<'a> IntoIterator for &'a EventBatch {
     }
 }
 
-impl Default for EventBatch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymethods]
 impl EventBatch {
@@ -227,102 +431,131 @@ impl EventBatch {
     }
 }
 
-pub trait EventDecoder {
-    type RawEventType: bytemuck::Pod + Copy;
-    fn new() -> Self;
-    fn decode(&mut self, raw_event: &[Self::RawEventType], batch: &mut EventBatch);
-}
-
 // ── RawFileReader ─────────────────────────────────────────────────────────────
 
+/// Convenience wrapper that opens a `.raw` file, parses its header, and
+/// provides an [`EventDecoder`] for iterating over decoded events.
 #[cfg_attr(all(not(target_arch = "wasm32"), feature = "python"), pyclass)]
 pub struct RawFileReader {
     pub header: RawFileHeader,
-    /// Path is only meaningful on native; empty on WASM.
     #[cfg(not(target_arch = "wasm32"))]
     path: Box<Path>,
-    event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
+    decoder: EventDecoder,
 }
 
-fn make_event_iterator<R: Read + Send + Sync + 'static>(
+fn make_decoder<R: Read + Send + Sync + 'static>(
     reader: BufReader<R>,
     event_type: RawEventType,
-) -> Result<Box<dyn Iterator<Item = EventBatch> + Send + Sync>, RawFileReaderError> {
-    Ok(match event_type {
-        RawEventType::Evt2  => Box::new(EvtReader::new(reader, Evt2Decoder::new())),
-        RawEventType::Evt21 => Box::new(EvtReader::new(reader, Evt21Decoder::new())),
-        RawEventType::Evt3  => Box::new(EvtReader::new(reader, Evt3Decoder::new())),
-        _                   => return Err(RawFileReaderError::DecoderNotImplemented(event_type)),
-    })
+) -> Result<EventDecoder, RawFileReaderError> {
+    use evt2::Evt2Decoder;
+    use evt2_1::Evt21Decoder;
+    use evt3::Evt3Decoder;
+    use evt_reader::FormatDecoder;
+
+    let stream: Box<dyn evt_reader::DecoderStream<EventBatch>> = match event_type {
+        RawEventType::Evt2 => Box::new(FormatReader::new(reader, Evt2Decoder::new())),
+        RawEventType::Evt21 => Box::new(FormatReader::new(reader, Evt21Decoder::new())),
+        RawEventType::Evt3 => Box::new(FormatReader::new(reader, Evt3Decoder::new())),
+        _ => return Err(RawFileReaderError::DecoderNotImplemented(event_type)),
+    };
+
+    Ok(EventDecoder::from_stream(stream))
+}
+
+/// Create an `EventDecoder` with a custom output type.
+///
+/// This is the generic version of `make_decoder` for advanced users who want
+/// a different output format (e.g., events + triggers, histograms, etc.).
+pub fn make_decoder_generic<R: Read + Send + Sync + 'static, O: DecoderOutput + 'static>(
+    reader: BufReader<R>,
+    event_type: RawEventType,
+) -> Result<EventDecoder<O>, RawFileReaderError> {
+    use evt2::Evt2Decoder;
+    use evt2_1::Evt21Decoder;
+    use evt3::Evt3Decoder;
+    use evt_reader::FormatDecoder;
+
+    let stream: Box<dyn evt_reader::DecoderStream<O>> = match event_type {
+        RawEventType::Evt2 => Box::new(FormatReader::new(reader, Evt2Decoder::new())),
+        RawEventType::Evt21 => Box::new(FormatReader::new(reader, Evt21Decoder::new())),
+        RawEventType::Evt3 => Box::new(FormatReader::new(reader, Evt3Decoder::new())),
+        _ => return Err(RawFileReaderError::DecoderNotImplemented(event_type)),
+    };
+
+    Ok(EventDecoder::from_stream(stream))
 }
 
 impl RawFileReader {
     /// Open a `.raw` file from the filesystem (native only).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(path: &Path) -> Result<Self, RawFileReaderError> {
-        let file = File::open(path)
-            .map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
+        let file =
+            File::open(path).map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
         let mut reader = BufReader::with_capacity(64 * 1024, file);
         let header = header::parse_header(&mut reader)?;
-        let event_iterator = make_event_iterator(reader, header.event_type)?;
-        Ok(RawFileReader { header, path: path.into(), event_iterator })
+        let decoder = make_decoder(reader, header.event_type)?;
+        Ok(RawFileReader {
+            header,
+            path: path.into(),
+            decoder,
+        })
     }
 
     /// Create a `RawFileReader` from any `Read` source.
-    ///
-    /// On WASM the source is typically a `Cursor<Arc<[u8]>>` built from
-    /// browser file bytes.  On native it can be any reader.
     pub fn from_reader<R: Read + Send + Sync + 'static>(
         reader: R,
     ) -> Result<Self, RawFileReaderError> {
         let mut buf_reader = BufReader::with_capacity(64 * 1024, reader);
         let header = header::parse_header(&mut buf_reader)?;
-        let event_iterator = make_event_iterator(buf_reader, header.event_type)?;
+        let decoder = make_decoder(buf_reader, header.event_type)?;
         Ok(RawFileReader {
             header,
             #[cfg(not(target_arch = "wasm32"))]
             path: std::path::PathBuf::new().into_boxed_path(),
-            event_iterator,
+            decoder,
         })
     }
 
-    pub fn read_events<'a>(&'a mut self) -> Box<dyn std::iter::Iterator<Item = EventBatch> + 'a> {
-        Box::new(&mut self.event_iterator)
+    /// Get a mutable reference to the event decoder for iteration and slice control.
+    pub fn decoder(&mut self) -> &mut EventDecoder {
+        &mut self.decoder
     }
 
-    /// Consume the reader, yielding an owned iterator over all event batches.
-    pub fn into_event_iter(self) -> Box<dyn Iterator<Item = EventBatch> + Send + Sync + 'static> {
-        self.event_iterator
+    /// Consume the reader, returning the owned event decoder.
+    pub fn into_decoder(self) -> EventDecoder {
+        self.decoder
     }
 
-    /// Return true if the geometry in the header was not found (width or height is 0).
+    /// Return true if the geometry in the header was not found.
     pub fn needs_geometry_scan(&self) -> bool {
         self.header.camera_geometry.width == 0 || self.header.camera_geometry.height == 0
     }
 
     /// Scan up to `max_batches` event batches to determine geometry from event coordinates.
-    /// Updates `header.camera_geometry` in place.
     pub fn scan_geometry(&mut self, max_batches: usize) {
         let mut max_x: u32 = 0;
         let mut max_y: u32 = 0;
         let mut seen = 0;
-        // We iterate the inner iterator directly so we can stop early.
-        // NOTE: these events are consumed and lost; call this only when you intend
-        // to recreate the reader afterwards (e.g. on WASM from in-memory bytes).
         while seen < max_batches {
-            match self.event_iterator.next() {
+            match self.decoder.next() {
                 Some(batch) => {
                     for evt in &batch {
-                        if evt.x as u32 > max_x { max_x = evt.x as u32; }
-                        if evt.y as u32 > max_y { max_y = evt.y as u32; }
+                        if evt.x as u32 > max_x {
+                            max_x = evt.x as u32;
+                        }
+                        if evt.y as u32 > max_y {
+                            max_y = evt.y as u32;
+                        }
                     }
-                    if !batch.is_empty() { seen += 1; }
+                    if !batch.is_empty() {
+                        seen += 1;
+                    }
                 }
                 None => break,
             }
         }
         if max_x > 0 || max_y > 0 {
-            self.header.camera_geometry.width  = max_x + 1;
+            self.header.camera_geometry.width = max_x + 1;
             self.header.camera_geometry.height = max_y + 1;
         }
     }
@@ -348,7 +581,8 @@ impl RawFileReader {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))
     }
 
-    pub fn get_event_iterator(&self) -> PyResult<EventIterator> {
+    /// Get an event decoder for this file. Supports optional slicing.
+    pub fn get_decoder(&self) -> PyResult<PyEventDecoder> {
         let file = File::open(&self.path).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open file: {}", e))
         })?;
@@ -360,67 +594,58 @@ impl RawFileReader {
             ))
         })?;
 
-        let event_iterator: Box<dyn Iterator<Item = EventBatch> + Send + Sync> =
-            match self.header.event_type {
-                RawEventType::Evt21 => Box::new(EvtReader::new(reader, Evt21Decoder::new())),
-                RawEventType::Evt3  => Box::new(EvtReader::new(reader, Evt3Decoder::new())),
-                _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    "Unsupported event type",
-                )),
-            };
+        let decoder = make_decoder(reader, self.header.event_type).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e))
+        })?;
 
-        Ok(EventIterator { inner: event_iterator })
+        Ok(PyEventDecoder { decoder })
     }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pyclass]
-pub struct EventIterator {
-    inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
+pub struct PyEventDecoder {
+    decoder: EventDecoder,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymethods]
-impl EventIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
-
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> { slf.inner.next() }
-
-    pub fn slice_by_time(mut slf: PyRefMut<'_, Self>, micros: u64) -> SliceIterator {
-        let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
-        SliceIterator { inner: Box::new(SliceIter::new(inner, SliceBy::Time(micros))) }
+impl PyEventDecoder {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
     }
 
-    pub fn slice_by_count(mut slf: PyRefMut<'_, Self>, count: usize) -> SliceIterator {
-        let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
-        SliceIterator { inner: Box::new(SliceIter::new(inner, SliceBy::Count(count))) }
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> {
+        slf.decoder.next()
     }
 
-    pub fn slice_by_both(mut slf: PyRefMut<'_, Self>, micros: u64, count: usize) -> SliceIterator {
-        let inner = std::mem::replace(&mut slf.inner, Box::new(std::iter::empty()));
-        SliceIterator { inner: Box::new(SliceIter::new(inner, SliceBy::Both(micros, count))) }
+    /// Set slicing by time (microseconds).
+    pub fn set_slice_time(&mut self, micros: u64) {
+        self.decoder.set_slice_by(Some(SliceBy::Time(micros)));
     }
-}
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
-#[pyclass]
-pub struct SliceIterator {
-    inner: Box<dyn Iterator<Item = EventBatch> + Send + Sync>,
-}
+    /// Set slicing by event count.
+    pub fn set_slice_count(&mut self, count: usize) {
+        self.decoder.set_slice_by(Some(SliceBy::Count(count)));
+    }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
-#[pymethods]
-impl SliceIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<EventBatch> { slf.inner.next() }
+    /// Set slicing by both time and count (whichever is reached first).
+    pub fn set_slice_both(&mut self, micros: u64, count: usize) {
+        self.decoder
+            .set_slice_by(Some(SliceBy::Both(micros, count)));
+    }
+
+    /// Disable slicing (return full chunk-sized batches).
+    pub fn clear_slice(&mut self) {
+        self.decoder.set_slice_by(None);
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
 #[pymodule]
 fn libreeb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EventBatch>()?;
-    m.add_class::<EventIterator>()?;
-    m.add_class::<SliceIterator>()?;
+    m.add_class::<PyEventDecoder>()?;
     m.add_class::<RawFileReader>()?;
     Ok(())
 }
@@ -435,12 +660,9 @@ mod tests {
     use std::hash::Hasher;
     use xxhash_rust::xxh64::Xxh64;
 
-    fn compute_hash<I>(batches: I) -> u64
-    where
-        I: Iterator<Item = EventBatch>,
-    {
+    fn compute_hash(decoder: &mut EventDecoder) -> u64 {
         let mut hasher = Xxh64::new(0);
-        for batch in batches {
+        while let Some(batch) = decoder.next() {
             for evt in &batch {
                 hasher.write_u16(evt.x);
                 hasher.write_u16(evt.y);
@@ -452,20 +674,112 @@ mod tests {
     }
 
     #[rstest]
-    #[case::evt3("data/gen4_evt3_hand.raw",      "references/gen4_evt3_hand.raw.no_time_shift.xxh")]
+    #[case::evt3("data/gen4_evt3_hand.raw", "references/gen4_evt3_hand.raw.no_time_shift.xxh")]
     #[case::evt21("data/claque_doigt_evt21.raw", "references/claque_doigt_evt21.raw.no_time_shift.xxh")]
-    #[case::evt2("data/blinking_leds.raw",       "references/blinking_leds.raw.no_time_shift.xxh")]
+    #[case::evt2("data/blinking_leds.raw", "references/blinking_leds.raw.no_time_shift.xxh")]
     fn test_decoder(#[case] raw_path: &str, #[case] ref_path: &str) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut reader = RawFileReader::new(std::path::Path::new(raw_path))
                 .expect("Failed to open input file");
-            let hash = compute_hash(reader.read_events());
-            let reference_content = fs::read_to_string(ref_path)
-                .expect("Failed to read reference file");
-            let reference: u64 = reference_content.trim().parse()
+            let hash = compute_hash(reader.decoder());
+            let reference_content =
+                fs::read_to_string(ref_path).expect("Failed to read reference file");
+            let reference: u64 = reference_content
+                .trim()
+                .parse()
                 .expect("Failed to parse reference hash");
             assert_eq!(hash, reference, "Hash mismatch for {}", raw_path);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[rstest]
+    #[case::evt3("data/gen4_evt3_hand.raw", 50_000)]
+    #[case::evt21("data/claque_doigt_evt21.raw", 50_000)]
+    #[case::evt2("data/blinking_leds.raw", 50_000)]
+    fn test_slice_by_count(#[case] path: &str, #[case] count: usize) {
+        // Count total events without slicing
+        let mut reader = RawFileReader::new(std::path::Path::new(path)).unwrap();
+        let total: usize = std::iter::from_fn(|| reader.decoder().next())
+            .map(|b| b.len())
+            .sum();
+
+        // Count with slicing — must produce same total
+        let mut reader = RawFileReader::new(std::path::Path::new(path)).unwrap();
+        reader.decoder().set_slice_by(Some(SliceBy::Count(count)));
+        let mut sliced_total = 0;
+        let mut prev_len = None;
+        while let Some(batch) = reader.decoder().next() {
+            assert!(!batch.is_empty());
+            // Every slice except possibly the last must be exactly `count`
+            if let Some(prev) = prev_len {
+                assert_eq!(prev, count, "mid-stream slice has wrong length");
+            }
+            prev_len = Some(batch.len());
+            sliced_total += batch.len();
+        }
+        assert_eq!(sliced_total, total, "event count changed after slicing");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[rstest]
+    #[case::evt3("data/gen4_evt3_hand.raw", 50_000)]
+    #[case::evt21("data/claque_doigt_evt21.raw", 50_000)]
+    #[case::evt2("data/blinking_leds.raw", 50_000)]
+    fn test_slice_by_time(#[case] path: &str, #[case] window_us: u64) {
+        // Count total events without slicing
+        let mut reader = RawFileReader::new(std::path::Path::new(path)).unwrap();
+        let total: usize = std::iter::from_fn(|| reader.decoder().next())
+            .map(|b| b.len())
+            .sum();
+
+        // Count with time slicing
+        let mut reader = RawFileReader::new(std::path::Path::new(path)).unwrap();
+        reader.decoder().set_slice_by(Some(SliceBy::Time(window_us)));
+        let mut sliced_total = 0;
+        while let Some(batch) = reader.decoder().next() {
+            assert!(!batch.is_empty());
+            let first_t = batch.t[0];
+            let last_t = *batch.t.last().unwrap();
+            assert!(
+                last_t < first_t + window_us,
+                "slice spans {} us, exceeds window {window_us}",
+                last_t - first_t,
+            );
+            sliced_total += batch.len();
+        }
+        assert_eq!(sliced_total, total, "event count changed after time-slicing");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn test_set_slice_by_mid_stream() {
+        let path = "data/gen4_evt3_hand.raw";
+
+        // Count total
+        let mut reader = RawFileReader::new(std::path::Path::new(path)).unwrap();
+        let total: usize = std::iter::from_fn(|| reader.decoder().next())
+            .map(|b| b.len())
+            .sum();
+
+        // Slice with mid-stream change
+        let mut reader = RawFileReader::new(std::path::Path::new(path)).unwrap();
+        let dec = reader.decoder();
+        dec.set_slice_by(Some(SliceBy::Time(50_000)));
+
+        let mut sliced_total = 0;
+        let mut frame_nr = 0usize;
+        while let Some(batch) = dec.next() {
+            sliced_total += batch.len();
+            frame_nr += 1;
+            if frame_nr == 1 {
+                dec.set_slice_by(Some(SliceBy::Time(10_000)));
+            }
+        }
+        assert_eq!(
+            sliced_total, total,
+            "event count changed after mid-stream set_slice_by"
+        );
     }
 }

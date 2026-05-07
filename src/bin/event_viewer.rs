@@ -6,7 +6,7 @@ use eframe::egui;
 #[cfg(target_arch = "wasm32")]
 use image::RgbImage;
 #[cfg(target_arch = "wasm32")]
-use libreeb::{biases::{BiasGroup, BIAS_TABLE}, processors::FrameGenerator, RawFileReader, SliceBy, SliceIter};
+use libreeb::{biases::{BiasGroup, BIAS_TABLE}, processors::FrameGenerator, RawFileReader, SliceBy, EventDecoder, EventBatch};
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
@@ -29,32 +29,44 @@ trait Producer: Send + 'static {
 // is never blocked.
 
 #[cfg(target_arch = "wasm32")]
-type BoxBatchIter = Box<dyn Iterator<Item = libreeb::EventBatch> + Send + Sync + 'static>;
-
-#[cfg(target_arch = "wasm32")]
 struct WasmFileProducer {
     bytes:     Arc<[u8]>,
     generator: FrameGenerator,
-    slicer:    SliceIter<BoxBatchIter>,
+    decoder:   EventDecoder<EventBatch>,
     slice:     SliceBy,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WasmFileProducer {
     fn new(bytes: Arc<[u8]>, width: u32, height: u32, slice: SliceBy) -> Self {
-        let slicer = Self::make_slicer(Arc::clone(&bytes), slice);
-        WasmFileProducer { bytes, generator: FrameGenerator::new(width, height), slicer, slice }
+        let decoder = Self::make_decoder(Arc::clone(&bytes), slice);
+        WasmFileProducer {
+            bytes,
+            generator: FrameGenerator::new(width, height),
+            decoder,
+            slice,
+        }
     }
 
-    fn make_slicer(bytes: Arc<[u8]>, slice: SliceBy) -> SliceIter<BoxBatchIter> {
-        match RawFileReader::from_reader(std::io::Cursor::new(bytes)) {
-            Ok(r)  => SliceIter::new(r.into_event_iter(), slice),
+    fn make_decoder(bytes: Arc<[u8]>, slice: SliceBy) -> EventDecoder<EventBatch> {
+        use std::io::Cursor;
+        match RawFileReader::from_reader(Cursor::new(bytes)) {
+            Ok(r) => {
+                let mut dec = r.into_decoder();
+                dec.set_slice_by(Some(slice));
+                dec
+            }
             Err(e) => {
                 web_sys::console::error_1(&format!("WasmFileProducer reader error: {e}").into());
-                SliceIter::new(
-                    Box::new(std::iter::empty::<libreeb::EventBatch>()) as BoxBatchIter,
-                    slice,
-                )
+                // Return a decoder that will yield nothing
+                let empty = RawFileReader::from_reader(Cursor::new(Arc::from([] as [u8; 0])));
+                match empty {
+                    Ok(r) => r.into_decoder(),
+                    Err(_) => {
+                        // Truly impossible to create — panic is acceptable here
+                        panic!("Cannot create empty decoder");
+                    }
+                }
             }
         }
     }
@@ -64,7 +76,7 @@ impl WasmFileProducer {
 impl Producer for WasmFileProducer {
     fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64)> {
         loop {
-            match self.slicer.next() {
+            match self.decoder.next() {
                 Some(batch) if !batch.is_empty() => {
                     let n = batch.len();
                     let rate = if n >= 2 {
@@ -73,10 +85,10 @@ impl Producer for WasmFileProducer {
                     } else { 0.0 };
                     return Some((self.generator.generate(&batch), n, rate));
                 }
-                Some(_) => {} // empty batch (all TIME_HIGH) — keep going
+                Some(_) => {} // empty batch — keep going
                 None => {
                     // EOF: restart on next call
-                    self.slicer = Self::make_slicer(Arc::clone(&self.bytes), self.slice);
+                    self.decoder = Self::make_decoder(Arc::clone(&self.bytes), self.slice);
                     return None;
                 }
             }
@@ -84,7 +96,7 @@ impl Producer for WasmFileProducer {
     }
     fn set_slice(&mut self, slice: SliceBy) {
         self.slice = slice;
-        self.slicer = Self::make_slicer(Arc::clone(&self.bytes), self.slice);
+        self.decoder = Self::make_decoder(Arc::clone(&self.bytes), self.slice);
     }
     fn apply_biases(&mut self, _: Vec<(usize, u8, i32)>) {}
     fn stop(&mut self) {}
