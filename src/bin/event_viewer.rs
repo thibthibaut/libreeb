@@ -53,7 +53,7 @@ impl WasmFileProducer {
         match RawFileReader::from_reader(Cursor::new(bytes)) {
             Ok(r) => {
                 let mut dec = r.into_decoder();
-                dec.set_slice_by(Some(slice));
+                dec.set_slice_by(slice);
                 dec
             }
             Err(e) => {

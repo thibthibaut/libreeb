@@ -1,4 +1,4 @@
-use crate::{DecoderOutput, EventBatch, SliceBy};
+use crate::{EventsRepr, EventBatch, SliceBy};
 use std::io::Read;
 
 const READ_BUFFER_SIZE: usize = 262144;
@@ -13,12 +13,12 @@ struct AlignedBuffer([u8; READ_BUFFER_SIZE]);
 
 /// Internal trait implemented by format-specific decoders (Evt2, Evt21, Evt3).
 ///
-/// The `decode` method is generic over `O: DecoderOutput`, allowing the same
+/// The `decode` method is generic over `O: EventsRepr`, allowing the same
 /// decoder implementation to produce different output types depending on what
 /// the caller needs (SoA batches, AoS vectors, histograms, etc.).
 ///
 /// This trait is not part of the public API.
-pub(crate) trait FormatDecoder: Send + Sync {
+pub(crate) trait RawFormatDecoder: Send + Sync {
     type RawEventType: bytemuck::Pod + Copy;
     fn new() -> Self;
 
@@ -29,7 +29,7 @@ pub(crate) trait FormatDecoder: Send + Sync {
     ///
     /// - `end_time`: stop when decoded timestamp >= this (u64::MAX = no limit)
     /// - `max_events`: stop after output contains this many CD events (usize::MAX = no limit)
-    fn decode<O: DecoderOutput>(
+    fn decode<O: EventsRepr>(
         &mut self,
         raw_events: &[Self::RawEventType],
         output: &mut O,
@@ -43,15 +43,15 @@ pub(crate) trait FormatDecoder: Send + Sync {
 
 // ── Object-safe wrapper for type-erased decoding ─────────────────────────────
 
-/// Object-safe trait wrapping a FormatDecoder + Read source.
+/// Object-safe trait wrapping a RawFormatDecoder + Read source.
 /// Parameterized by output type `O` for compile-time dispatch.
-pub(crate) trait DecoderStream<O: DecoderOutput>: Send + Sync {
+pub(crate) trait DecoderStream<O: EventsRepr>: Send + Sync {
     fn next_batch(&mut self, end_time: u64, max_events: usize) -> Option<O>;
     fn current_time(&self) -> u64;
 }
 
 /// Concrete reader for a specific format. Holds the byte reader + format decoder.
-pub(crate) struct FormatReader<R: Read, D: FormatDecoder> {
+pub(crate) struct BufferedDecoder<R: Read, D: RawFormatDecoder> {
     reader: R,
     decoder: D,
     buffer: AlignedBuffer,
@@ -59,9 +59,9 @@ pub(crate) struct FormatReader<R: Read, D: FormatDecoder> {
     buffer_cursor: usize,
 }
 
-impl<R: Read, D: FormatDecoder> FormatReader<R, D> {
+impl<R: Read, D: RawFormatDecoder> BufferedDecoder<R, D> {
     pub fn new(reader: R, decoder: D) -> Self {
-        FormatReader {
+        BufferedDecoder {
             reader,
             decoder,
             buffer: AlignedBuffer([0; READ_BUFFER_SIZE]),
@@ -107,8 +107,8 @@ impl<R: Read, D: FormatDecoder> FormatReader<R, D> {
     }
 }
 
-impl<R: Read + Send + Sync, D: FormatDecoder, O: DecoderOutput> DecoderStream<O>
-    for FormatReader<R, D>
+impl<R: Read + Send + Sync, D: RawFormatDecoder, O: EventsRepr> DecoderStream<O>
+    for BufferedDecoder<R, D>
 {
     fn next_batch(&mut self, end_time: u64, max_events: usize) -> Option<O> {
         let word_size = std::mem::size_of::<D::RawEventType>();
@@ -170,7 +170,7 @@ impl<R: Read + Send + Sync, D: FormatDecoder, O: DecoderOutput> DecoderStream<O>
 /// event format type, then iterate to get decoded event batches.
 ///
 /// The output type `O` defaults to [`EventBatch`] (SoA layout) but can be any
-/// type implementing [`DecoderOutput`]. This is determined at compile time,
+/// type implementing [`EventsRepr`]. This is determined at compile time,
 /// allowing the compiler to fully optimize for the chosen output layout.
 ///
 /// # Slicing
@@ -186,33 +186,153 @@ impl<R: Read + Send + Sync, D: FormatDecoder, O: DecoderOutput> DecoderStream<O>
 /// use libreeb::{EventDecoder, SliceBy};
 ///
 /// let mut decoder = EventDecoder::new(reader, RawEventType::Evt3)?;
-/// decoder.set_slice_by(Some(SliceBy::Time(33_333)));
+/// decoder.set_slice_by(SliceBy::Time(33_333));
 /// while let Some(batch) = decoder.next() {
 ///     process(&batch);
-///     decoder.set_slice_by(Some(SliceBy::Time(10_000))); // can change mid-stream
+///     decoder.set_slice_by(SliceBy::Time(10_000)); // can change mid-stream
 /// }
 /// ```
-pub struct EventDecoder<O: DecoderOutput = EventBatch> {
+/// Public iterator for decoding events with optional time/count/byte slicing.
+///
+/// This struct wraps a format-specific decoder and provides a unified interface
+/// for iterating over batches of events. The output type `O` is determined at compile
+/// time and defaults to [`EventBatch`].
+///
+/// # Slicing Modes
+///
+/// The decoder supports several slicing modes via [`set_slice_by`](EventDecoder::set_slice_by):
+///
+/// - `SliceBy::Time(us)` — batches span a fixed time window
+/// - `SliceBy::Count(n)` — batches contain up to n events
+/// - `SliceBy::Both(us, n)` — whichever limit is hit first
+/// - `SliceBy::Bytes(n)` — decode in chunks of ~n bytes (default: 256 KB)
+///
+/// The default mode is `Bytes(256 * 1024)`, which processes data in buffer-sized
+/// chunks without enforcing specific time or count constraints. This is the fastest
+/// mode for streaming through data when you don't need precise batch boundaries.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use libreeb::{RawFileReader, SliceBy};
+/// let mut reader = RawFileReader::new("data.raw")?;
+/// let decoder = reader.decoder();
+///
+/// // Default mode: chunked decoding
+/// for batch in decoder {
+///     println!("Got {} events", batch.len());
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// With time-based slicing:
+/// ```no_run
+/// # use libreeb::{RawFileReader, SliceBy};
+/// let mut reader = RawFileReader::new("data.raw")?;
+/// let decoder = reader.decoder();
+/// decoder.set_slice_by(SliceBy::Time(33_333)); // 33.3ms slices
+///
+/// for batch in decoder {
+///     // Each batch spans ~33ms
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Changing slice mode mid-stream:
+/// ```no_run
+/// # use libreeb::{RawFileReader, SliceBy};
+/// let mut reader = RawFileReader::new("data.raw")?;
+/// let mut decoder = reader.decoder();
+///
+/// decoder.set_slice_by(SliceBy::Time(10_000)); // Start with 10ms
+/// if let Some(first) = decoder.next() {
+///     println!("First batch: {} events", first.len());
+///     decoder.set_slice_by(SliceBy::Count(5000)); // Switch to count-based
+/// }
+///
+/// for batch in decoder {
+///     println!("Got {} events", batch.len());
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// # Type Erasure and Compile-Time Polymorphism
+///
+/// The output type `O` is a compile-time generic parameter that must implement
+/// [`EventsRepr`](crate::EventsRepr). By default, it's [`EventBatch`] (SoA format).
+///
+/// For most users, the default is fine — just use [`RawFileReader::decoder()`]
+/// which returns `EventDecoder<EventBatch>`.
+///
+/// Advanced users can create custom output types using [`make_decoder_generic`]:
+///
+/// ```no_run
+/// # use std::io::{BufReader, Cursor};
+/// # use libreeb::{make_decoder_generic, header::RawEventType, EventsRepr};
+/// # struct MyOutput;
+/// # impl Default for MyOutput { fn default() -> Self { MyOutput } }
+/// # impl EventsRepr for MyOutput {
+/// #     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {}
+/// #     fn len(&self) -> usize { 0 }
+/// #     fn last_t(&self) -> Option<u64> { None }
+/// # }
+/// let cursor = Cursor::new(vec![/* raw data */]);
+/// let mut decoder = make_decoder_generic::<_, MyOutput>(
+///     BufReader::new(cursor),
+///     RawEventType::Evt3
+/// )?;
+///
+/// for output in decoder {
+///     // output is MyOutput, not EventBatch
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// The type erasure happens via the `DecoderStream<O>` trait, which is boxed
+/// internally. This allows different format decoders (EVT2, EVT21, EVT3) to be
+/// used interchangeably while maintaining compile-time polymorphism for the
+/// output type.
+pub struct EventDecoder<O: EventsRepr = EventBatch> {
     stream: Box<dyn DecoderStream<O>>,
-    slice_by: Option<SliceBy>,
+    slice_by: SliceBy,
     slice_anchor: Option<u64>,
 }
 
-impl<O: DecoderOutput> EventDecoder<O> {
+/// Default chunk size for `SliceBy::Bytes` mode (256 KB).
+pub const DEFAULT_CHUNK_BYTES: usize = 256 * 1024;
+
+impl<O: EventsRepr> EventDecoder<O> {
     /// Create a new decoder from a boxed stream (internal use).
     pub(crate) fn from_stream(stream: Box<dyn DecoderStream<O>>) -> Self {
         EventDecoder {
             stream,
-            slice_by: None,
+            slice_by: SliceBy::Bytes(DEFAULT_CHUNK_BYTES),
             slice_anchor: None,
         }
     }
 
-    /// Set or clear the slicing condition.
+    /// Set the slicing mode.
     ///
     /// Takes effect on the next call to [`Iterator::next`].
-    /// Pass `None` to disable slicing (returns full chunk-sized batches).
-    pub fn set_slice_by(&mut self, slice_by: Option<SliceBy>) {
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use libreeb::{RawFileReader, SliceBy};
+    /// let mut reader = RawFileReader::new("data.raw")?;
+    /// let mut decoder = reader.decoder();
+    ///
+    /// // Time-based slicing: 33.3ms windows
+    /// decoder.set_slice_by(SliceBy::Time(33_333));
+    ///
+    /// // Count-based slicing: 10k events per batch
+    /// decoder.set_slice_by(SliceBy::Count(10_000));
+    ///
+    /// // Chunked decoding: ~256 KB of raw data per batch
+    /// decoder.set_slice_by(SliceBy::Bytes(256 * 1024));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn set_slice_by(&mut self, slice_by: SliceBy) {
         self.slice_by = slice_by;
         self.slice_anchor = None;
     }
@@ -220,15 +340,15 @@ impl<O: DecoderOutput> EventDecoder<O> {
     /// Compute (end_time, max_events) for the current slice.
     fn budget(&self) -> (u64, usize) {
         match self.slice_by {
-            None => (u64::MAX, usize::MAX),
-            Some(SliceBy::Time(us)) => {
+            SliceBy::Bytes(_) => (u64::MAX, usize::MAX),
+            SliceBy::Time(us) => {
                 let end = self
                     .slice_anchor
                     .map_or(u64::MAX, |anchor| anchor.saturating_add(us));
                 (end, usize::MAX)
             }
-            Some(SliceBy::Count(n)) => (u64::MAX, n),
-            Some(SliceBy::Both(us, n)) => {
+            SliceBy::Count(n) => (u64::MAX, n),
+            SliceBy::Both(us, n) => {
                 let end = self
                     .slice_anchor
                     .map_or(u64::MAX, |anchor| anchor.saturating_add(us));
@@ -238,16 +358,16 @@ impl<O: DecoderOutput> EventDecoder<O> {
     }
 }
 
-impl<O: DecoderOutput> Iterator for EventDecoder<O> {
+impl<O: EventsRepr> Iterator for EventDecoder<O> {
     type Item = O;
 
     fn next(&mut self) -> Option<O> {
-        if self.slice_by.is_none() {
-            // No slicing: decode one full chunk
-            let batch = self.stream.next_batch(u64::MAX, usize::MAX)?;
-            return Some(batch);
+        // Bytes mode: just decode one full chunk without time/count constraints
+        if matches!(self.slice_by, SliceBy::Bytes(_)) {
+            return self.stream.next_batch(u64::MAX, usize::MAX);
         }
 
+        // Time/Count/Both mode: need anchoring and windowing
         loop {
             // First call for this slice: anchor to the decoder's current time
             if self.slice_anchor.is_none() {
