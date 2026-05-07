@@ -17,7 +17,7 @@ pub use evt2_1::Evt21;
 pub use evt3::Evt3;
 
 // Re-export the public EventDecoder (the user-facing API)
-pub use evt_reader::EventDecoder;
+pub use evt_reader::{EventDecoder, DEFAULT_CHUNK_BYTES};
 
 pub mod biases;
 pub mod evt2;
@@ -499,19 +499,7 @@ fn make_decoder<R: Read + Send + Sync + 'static>(
     reader: BufReader<R>,
     event_type: RawEventType,
 ) -> Result<EventDecoder, RawFileReaderError> {
-    use evt2::Evt2Decoder;
-    use evt2_1::Evt21Decoder;
-    use evt3::Evt3Decoder;
-    use evt_reader::RawFormatDecoder;
-
-    let stream: Box<dyn evt_reader::DecoderStream<EventBatch>> = match event_type {
-        RawEventType::Evt2 => Box::new(BufferedDecoder::new(reader, Evt2Decoder::new())),
-        RawEventType::Evt21 => Box::new(BufferedDecoder::new(reader, Evt21Decoder::new())),
-        RawEventType::Evt3 => Box::new(BufferedDecoder::new(reader, Evt3Decoder::new())),
-        _ => return Err(RawFileReaderError::DecoderNotImplemented(event_type)),
-    };
-
-    Ok(EventDecoder::from_stream(stream))
+    make_decoder_generic::<R, EventBatch>(reader, event_type)
 }
 
 /// Create an `EventDecoder` with a custom output type.
