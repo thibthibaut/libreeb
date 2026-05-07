@@ -1,5 +1,5 @@
 use crate::evt_reader::RawFormatDecoder;
-use crate::{declare_raw_evt, EventsRepr, Stage};
+use crate::{declare_raw_evt, DecodeInto, Stage};
 use wide::u16x8;
 
 declare_raw_evt! {
@@ -55,7 +55,7 @@ impl RawFormatDecoder for Evt3Decoder {
         self.time
     }
 
-    fn decode<O: EventsRepr>(
+    fn decode<O: DecodeInto>(
         &mut self,
         raw_events: &[Evt3],
         output: &mut O,
@@ -89,23 +89,30 @@ impl RawFormatDecoder for Evt3Decoder {
         let mut cur_pol = self.polarity;
         let mut time_base = self.time_base;
 
-        // Helper closure to flush and track count
-        let flush_stage = |stage: &mut Stage, output: &mut O, decoded_count: &mut usize| {
-            *decoded_count += stage.len();
+        // Inline flush helper to avoid closure overhead
+        #[inline(always)]
+        fn flush_and_count<O: DecodeInto>(stage: &mut Stage, output: &mut O, count: &mut usize) {
+            *count += stage.len();
             stage.flush(output);
-        };
+        }
 
         macro_rules! emit {
             ($x:expr, $y:expr, $p:expr, $t:expr) => {
                 if stage.is_full() {
-                    flush_stage(&mut stage, output, &mut decoded_count);
+                    flush_and_count(&mut stage, output, &mut decoded_count);
                 }
                 stage.push_unchecked($x, $y, $p, $t);
             };
         }
 
         // ── SIMD bulk path: process runs of EVT_ADDR_X (8 at a time) ─────
-        while i + 8 <= n && decoded_count + stage.len() < max_events.saturating_sub(8) {
+        while i + 8 <= n {
+            // Pre-compute budget to avoid repeated addition
+            let current_total = decoded_count + stage.len();
+            if current_total >= max_events.saturating_sub(8) {
+                break;
+            }
+
             // Load 8 words
             let arr: [u16; 8] = words[i..i + 8].try_into().unwrap();
             let simd = u16x8::new(arr);
@@ -118,20 +125,16 @@ impl RawFormatDecoder for Evt3Decoder {
                 // SIMD fast path: extract x and p for all 8 events
                 let x_vals = (simd & u16x8::splat(0x07FF)).to_array();
                 let p_raw = ((simd >> 11_u32) & u16x8::splat(1)).to_array();
+                
+                // Extract p values as u8 array
                 let p_vals: [u8; 8] = [
-                    p_raw[0] as u8,
-                    p_raw[1] as u8,
-                    p_raw[2] as u8,
-                    p_raw[3] as u8,
-                    p_raw[4] as u8,
-                    p_raw[5] as u8,
-                    p_raw[6] as u8,
-                    p_raw[7] as u8,
+                    p_raw[0] as u8, p_raw[1] as u8, p_raw[2] as u8, p_raw[3] as u8,
+                    p_raw[4] as u8, p_raw[5] as u8, p_raw[6] as u8, p_raw[7] as u8,
                 ];
 
                 // Flush stage if needed and write 8 events at once
                 if stage.len() + 8 > crate::STAGE_CAP {
-                    flush_stage(&mut stage, output, &mut decoded_count);
+                    flush_and_count(&mut stage, output, &mut decoded_count);
                 }
                 stage.push_8(x_vals, cur_y, p_vals, cur_t);
                 i += 8;
@@ -144,7 +147,7 @@ impl RawFormatDecoder for Evt3Decoder {
 
         // ── Scalar path: process remaining words one at a time ───────────
         while i < n {
-            // Budget checks
+            // Budget check (once per iteration)
             if decoded_count + stage.len() >= max_events {
                 break;
             }
@@ -157,27 +160,26 @@ impl RawFormatDecoder for Evt3Decoder {
                 emit!(w & 0x07FF, cur_y, (w >> 11) as u8 & 1, cur_t);
 
                 // Try SIMD again if we have a run
-                while i + 8 <= n
-                    && decoded_count + stage.len() < max_events.saturating_sub(8)
-                {
+                while i + 8 <= n {
+                    let current_total = decoded_count + stage.len();
+                    if current_total >= max_events.saturating_sub(8) {
+                        break;
+                    }
+
                     let arr: [u16; 8] = words[i..i + 8].try_into().unwrap();
                     let simd = u16x8::new(arr);
                     let types = (simd >> 12_u32).to_array();
+                    
                     if types == [2, 2, 2, 2, 2, 2, 2, 2] {
                         let x_vals = (simd & u16x8::splat(0x07FF)).to_array();
                         let p_raw = ((simd >> 11_u32) & u16x8::splat(1)).to_array();
                         let p_vals: [u8; 8] = [
-                            p_raw[0] as u8,
-                            p_raw[1] as u8,
-                            p_raw[2] as u8,
-                            p_raw[3] as u8,
-                            p_raw[4] as u8,
-                            p_raw[5] as u8,
-                            p_raw[6] as u8,
-                            p_raw[7] as u8,
+                            p_raw[0] as u8, p_raw[1] as u8, p_raw[2] as u8, p_raw[3] as u8,
+                            p_raw[4] as u8, p_raw[5] as u8, p_raw[6] as u8, p_raw[7] as u8,
                         ];
+                        
                         if stage.len() + 8 > crate::STAGE_CAP {
-                            flush_stage(&mut stage, output, &mut decoded_count);
+                            flush_and_count(&mut stage, output, &mut decoded_count);
                         }
                         stage.push_8(x_vals, cur_y, p_vals, cur_t);
                         i += 8;
@@ -261,7 +263,7 @@ impl RawFormatDecoder for Evt3Decoder {
                     let id = ((w >> 8) & 0xF) as u8;
                     let pol = (w & 1) as u8;
                     // Flush stage before emitting trigger (preserve ordering)
-                    flush_stage(&mut stage, output, &mut decoded_count);
+                    flush_and_count(&mut stage, output, &mut decoded_count);
                     output.push_trigger(id, pol, cur_t);
                 }
                 _ => {}
