@@ -17,7 +17,7 @@ pub use evt2_1::Evt21;
 pub use evt3::Evt3;
 
 // Re-export the public EventDecoder (the user-facing API)
-pub use evt_reader::{EventDecoder, DEFAULT_CHUNK_BYTES};
+pub use evt_reader::EventDecoder;
 
 pub mod biases;
 pub mod evt2;
@@ -57,13 +57,15 @@ pub enum SliceBy {
     Count(usize),
     /// Slice by whichever limit is reached first: time or count.
     Both(u64, usize),
-    /// Decode events from approximately this many bytes of raw input per iteration.
-    /// This is the "chunked" mode — it processes data in buffer-sized chunks without
-    /// enforcing specific time or count constraints. The actual number of events per
-    /// batch will vary based on event density and buffer boundaries.
+    /// Decode events in fixed-size chunks from the internal buffer.
+    /// This is the "chunked" mode — it processes data in buffer-sized chunks
+    /// (currently 256 KB) without enforcing specific time or count constraints.
+    /// The actual number of events per batch will vary based on event density
+    /// and buffer boundaries.
     ///
-    /// Default: `Bytes(256 * 1024)` (matches internal buffer size).
-    Bytes(usize),
+    /// This is the default and fastest mode for streaming through data when
+    /// you don't need precise batch boundaries.
+    Bytes,
 }
 
 // ── Error types ──────────────────────────────────────────────────────────────
@@ -674,13 +676,12 @@ impl PyEventDecoder {
         self.decoder.set_slice_by(SliceBy::Both(micros, count));
     }
 
-    /// Set chunked decoding mode (decode in buffer-sized chunks).
+    /// Reset to chunked decoding mode (decode in fixed 256 KB buffer-sized chunks).
     ///
-    /// This is the default mode. The `bytes` parameter is a hint for the approximate
-    /// number of raw bytes to process per batch. The actual batch size will vary
-    /// based on event density and buffer boundaries.
-    pub fn set_slice_bytes(&mut self, bytes: usize) {
-        self.decoder.set_slice_by(SliceBy::Bytes(bytes));
+    /// This is the default and fastest mode. Each batch will contain whatever events
+    /// fit in one buffer read, with no time or count constraints.
+    pub fn set_slice_bytes(&mut self) {
+        self.decoder.set_slice_by(SliceBy::Bytes);
     }
 }
 
