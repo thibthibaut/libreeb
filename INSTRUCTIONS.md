@@ -1,0 +1,7 @@
+- Make more sense of the data (why CameraGeometry isn't used in the FrameGenerator ?)
+- Improve tests (for instnace header.rs) has zero tests. Test also on real files (present in data)
+- Improve the viewer with all these new features:
+- Fix playback especially for pre-recorded files (.raw files), the playback must be real-time meaning the events should be displayed on screen just like if thy are coming from a real camera.
+- Add a Frame rate setting, when in camera streaming mode, fix the framerate at 30 FPS, always display event slices at 30FPS regardless of the accumulation time, however when playing a recording add multiple frame rate (from 10000 ips (x0.003) to 10 ips (x3)) to allow playing back the recorded file slower or faster. notice that the behaviour is different between playing a raw file and playing live from the camera. When playing live from the camera don't show the frame rate button
+- Add a way to save and load biases, an example bias file is present in this directory ./biases.bias
+- Add a way to start and stop a recording. Record the .raw bytes as is, you just need to add the header.

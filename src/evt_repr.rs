@@ -29,6 +29,23 @@ pub struct EventCD {
     pub t: u64,
 }
 
+// ── Trigger ──────────────────────────────────────────────────────────────────
+
+/// An external trigger event.
+///
+/// External triggers are synchronization signals recorded alongside CD events,
+/// typically used for correlating camera data with external sensors or systems.
+///
+/// - `id`: trigger channel/ID (0–15 in EVT3, 0–31 in EVT2/EVT21)
+/// - `p`: trigger value/polarity (0 or 1)
+/// - `t`: timestamp in microseconds relative to the start of the recording
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trigger {
+    pub id: u8,
+    pub p: bool,
+    pub t: u64,
+}
+
 // ── EventSoA (Structure-of-Arrays) ──────────────────────────────────────────
 
 /// Structure-of-Arrays (SoA) event batch representation.
@@ -45,6 +62,7 @@ pub struct EventSoA {
     pub y: Vec<u16>,
     pub p: Vec<u8>,
     pub t: Vec<u64>,
+    pub triggers: Vec<Trigger>,
 }
 
 impl EventSoA {
@@ -54,6 +72,7 @@ impl EventSoA {
             y: Vec::new(),
             p: Vec::new(),
             t: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 
@@ -71,6 +90,7 @@ impl EventSoA {
             y: Vec::with_capacity(cap),
             p: Vec::with_capacity(cap),
             t: Vec::with_capacity(cap),
+            triggers: Vec::new(),
         }
     }
 
@@ -90,11 +110,12 @@ impl EventSoA {
     }
 
     /// Append all events from `other` into `self`.
-    pub fn append(&mut self, mut other: EventSoA) {
+    pub fn append(&mut self, other: &mut EventSoA) {
         self.x.append(&mut other.x);
         self.y.append(&mut other.y);
         self.p.append(&mut other.p);
         self.t.append(&mut other.t);
+        self.triggers.append(&mut other.triggers);
     }
 
     /// Split at index `at`. `self` retains `[0..at)`, returns `[at..)`.
@@ -104,6 +125,7 @@ impl EventSoA {
             y: self.y.split_off(at),
             p: self.p.split_off(at),
             t: self.t.split_off(at),
+            triggers: Vec::new(), // triggers stay with first half
         }
     }
 }
@@ -124,6 +146,11 @@ impl EventsRepr for EventSoA {
     }
 
     #[inline]
+    fn push_trigger(&mut self, id: u8, p: u8, t: u64) {
+        self.triggers.push(Trigger { id, p: p != 0, t });
+    }
+
+    #[inline]
     fn extend_from_soa(&mut self, x: &[u16], y: &[u16], p: &[u8], t: &[u64]) {
         self.x.extend_from_slice(x);
         self.y.extend_from_slice(y);
@@ -138,24 +165,6 @@ impl EventsRepr for EventSoA {
         self.y.resize(new_len, y);
         self.p.resize(new_len, p);
         self.t.resize(new_len, t);
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.x.len()
-    }
-
-    #[inline]
-    fn last_t(&self) -> Option<u64> {
-        self.t.last().copied()
-    }
-
-    #[inline]
-    fn reserve(&mut self, n: usize) {
-        self.x.reserve(n);
-        self.y.reserve(n);
-        self.p.reserve(n);
-        self.t.reserve(n);
     }
 }
 
@@ -223,12 +232,14 @@ pub type EventBatch = EventSoA;
 #[derive(Debug, Clone)]
 pub struct EventAoS {
     pub events: Vec<EventCD>,
+    pub triggers: Vec<Trigger>,
 }
 
 impl EventAoS {
     pub fn new() -> Self {
         EventAoS {
             events: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 
@@ -243,6 +254,7 @@ impl EventAoS {
     pub fn with_capacity(cap: usize) -> Self {
         EventAoS {
             events: Vec::with_capacity(cap),
+            triggers: Vec::new(),
         }
     }
 
@@ -250,13 +262,15 @@ impl EventAoS {
         self.events.push(evt);
     }
 
-    pub fn append(&mut self, mut other: EventAoS) {
+    pub fn append(&mut self, other: &mut EventAoS) {
         self.events.append(&mut other.events);
+        self.triggers.append(&mut other.triggers);
     }
 
     pub fn split_off(&mut self, at: usize) -> EventAoS {
         EventAoS {
             events: self.events.split_off(at),
+            triggers: Vec::new(), // triggers stay with first half
         }
     }
 }
@@ -271,6 +285,11 @@ impl EventsRepr for EventAoS {
     #[inline]
     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {
         self.events.push(EventCD { x, y, p, t });
+    }
+
+    #[inline]
+    fn push_trigger(&mut self, id: u8, p: u8, t: u64) {
+        self.triggers.push(Trigger { id, p: p != 0, t });
     }
 
     #[inline]
@@ -293,21 +312,6 @@ impl EventsRepr for EventAoS {
             self.events.push(EventCD { x, y, p, t });
         }
     }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.events.len()
-    }
-
-    #[inline]
-    fn last_t(&self) -> Option<u64> {
-        self.events.last().map(|e| e.t)
-    }
-
-    #[inline]
-    fn reserve(&mut self, n: usize) {
-        self.events.reserve(n);
-    }
 }
 
 impl<'a> IntoIterator for &'a EventAoS {
@@ -316,6 +320,125 @@ impl<'a> IntoIterator for &'a EventAoS {
 
     fn into_iter(self) -> Self::IntoIter {
         self.events.iter()
+    }
+}
+
+// ── EventCollection trait ───────────────────────────────────────────────────
+
+/// Trait for event representations that can be iterated and manipulated as collections.
+///
+/// This trait represents event storage types that:
+/// - Can be queried for their size (`num_events`, `len`)
+/// - Can be iterated over to access individual events
+/// - Support collection operations like `append` and `split_off`
+///
+/// Not all `EventsRepr` implementations are collections. For example, destructive
+/// representations like histograms or time surfaces implement `EventsRepr` (to receive
+/// decoded events) but do NOT implement `EventCollection` (cannot iterate over past events).
+///
+/// Types implementing this trait:
+/// - [`EventSoA`]: Structure-of-Arrays layout
+/// - [`EventAoS`]: Array-of-Structures layout
+pub trait EventCollection: EventsRepr {
+    /// Create a new empty collection.
+    fn new() -> Self;
+
+    /// Create a new collection with pre-allocated capacity for `cap` events.
+    fn with_capacity(cap: usize) -> Self;
+
+    /// Total number of CD events stored in this collection.
+    fn num_events(&self) -> usize;
+
+    /// Standard Rust collection method. For event collections, returns the same
+    /// value as `num_events()`. Provided for consistency with Rust conventions.
+    fn len(&self) -> usize {
+        self.num_events()
+    }
+
+    /// Whether the collection contains no CD events.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Append all events from `other` into `self`, leaving `other` empty.
+    fn append(&mut self, other: &mut Self);
+
+    /// Split the collection at index `at`.
+    ///
+    /// Returns a new collection containing events `[at..)`, while `self` retains `[0..at)`.
+    fn split_off(&mut self, at: usize) -> Self;
+
+    /// Iterator over CD events in this collection.
+    fn iter_cd(&self) -> impl Iterator<Item = EventCD> + '_;
+
+    /// Iterator over trigger events in this collection.
+    fn iter_triggers(&self) -> impl Iterator<Item = Trigger> + '_;
+}
+
+// ── EventCollection implementations ─────────────────────────────────────────
+
+impl EventCollection for EventSoA {
+    fn new() -> Self {
+        EventSoA::new()
+    }
+
+    fn with_capacity(cap: usize) -> Self {
+        EventSoA::with_capacity(cap)
+    }
+
+    fn num_events(&self) -> usize {
+        self.x.len()
+    }
+
+    fn append(&mut self, other: &mut Self) {
+        EventSoA::append(self, other);
+    }
+
+    fn split_off(&mut self, at: usize) -> Self {
+        EventSoA::split_off(self, at)
+    }
+
+    fn iter_cd(&self) -> impl Iterator<Item = EventCD> + '_ {
+        (0..self.len()).map(move |i| EventCD {
+            x: self.x[i],
+            y: self.y[i],
+            p: self.p[i],
+            t: self.t[i],
+        })
+    }
+
+    fn iter_triggers(&self) -> impl Iterator<Item = Trigger> + '_ {
+        self.triggers.iter().copied()
+    }
+}
+
+impl EventCollection for EventAoS {
+    fn new() -> Self {
+        EventAoS::new()
+    }
+
+    fn with_capacity(cap: usize) -> Self {
+        EventAoS::with_capacity(cap)
+    }
+
+    fn num_events(&self) -> usize {
+        self.events.len()
+    }
+
+    fn append(&mut self, other: &mut Self) {
+        EventAoS::append(self, other);
+    }
+
+    fn split_off(&mut self, at: usize) -> Self {
+        EventAoS::split_off(self, at)
+    }
+
+    fn iter_cd(&self) -> impl Iterator<Item = EventCD> + '_ {
+        self.events.iter().copied()
+    }
+
+    fn iter_triggers(&self) -> impl Iterator<Item = Trigger> + '_ {
+        self.triggers.iter().copied()
     }
 }
 

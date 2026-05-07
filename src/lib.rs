@@ -20,7 +20,7 @@ pub use evt3::Evt3;
 pub use evt_reader::EventDecoder;
 
 // Re-export event representation types
-pub use evt_repr::{EventAoS, EventBatch, EventCD, EventSoA};
+pub use evt_repr::{EventAoS, EventBatch, EventCD, EventCollection, EventSoA, Trigger};
 
 pub mod biases;
 pub mod evt2;
@@ -193,28 +193,6 @@ pub trait EventsRepr: Default + Send {
     /// that need trigger correlation (e.g. `EventsWithTriggers`).
     #[inline]
     fn push_trigger(&mut self, _channel: u8, _value: u8, _t: u64) {}
-
-    // ── Bookkeeping ──────────────────────────────────────────────────
-
-    /// Number of CD events accumulated so far.
-    ///
-    /// Triggers and other non-CD events are NOT counted. This value drives
-    /// slice budget decisions (max_events).
-    fn len(&self) -> usize;
-
-    /// Whether the output contains no CD events.
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Timestamp of the last CD event, or `None` if empty.
-    ///
-    /// Used by `EventDecoder` for time-slice anchoring.
-    fn last_t(&self) -> Option<u64>;
-
-    /// Hint to reserve capacity for approximately `n` more CD events.
-    fn reserve(&mut self, n: usize);
 }
 
 // ── Stage: fixed-size stack buffer for batching events ───────────────────────
@@ -319,7 +297,7 @@ fn make_decoder<R: Read + Send + Sync + 'static>(
 ///
 /// This is the generic version of `make_decoder` for advanced users who want
 /// a different output format (e.g., events + triggers, histograms, etc.).
-pub fn make_decoder_generic<R: Read + Send + Sync + 'static, O: EventsRepr + 'static>(
+pub fn make_decoder_generic<R: Read + Send + Sync + 'static, O: evt_repr::EventCollection + 'static>(
     reader: BufReader<R>,
     event_type: RawEventType,
 ) -> Result<EventDecoder<O>, RawFileReaderError> {

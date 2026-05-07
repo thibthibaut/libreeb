@@ -1,0 +1,97 @@
+uv run analyze_evt3.py
+Total words: 183662174
+
+=== Type frequency ===
+  EVT_ADDR_X           (0x02):  102661116  (55.90%)
+  EVT_ADDR_Y           (0x00):   52863448  (28.78%)
+  EVT_TIME_LOW         (0x06):   10527930  (5.73%)
+  VECT_12              (0x04):    8446562  (4.60%)
+  VECT_8               (0x05):    4223281  (2.30%)
+  VECT_BASE_X          (0x03):    4158781  (2.26%)
+  EVT_TIME_HIGH        (0x08):     781056  (0.43%)
+
+=== 2-gram type sequences (top 20) ===
+  [EVT_ADDR_Y -> EVT_ADDR_X]: 51421813
+  [EVT_ADDR_X -> EVT_ADDR_X]: 48426719
+  [EVT_ADDR_X -> EVT_ADDR_Y]: 41340371
+  [EVT_TIME_LOW -> EVT_ADDR_Y]: 10509686
+  [EVT_ADDR_X -> EVT_TIME_LOW]: 9567041
+  [VECT_12 -> VECT_12]: 4223281
+  [VECT_12 -> VECT_8]: 4223281
+  [VECT_BASE_X -> VECT_12]: 4158781
+  [VECT_8 -> EVT_ADDR_X]: 2812584
+  [EVT_ADDR_X -> VECT_BASE_X]: 2559191
+  [EVT_ADDR_Y -> VECT_BASE_X]: 1441635
+  [VECT_8 -> EVT_ADDR_Y]: 1013391
+  [EVT_TIME_HIGH -> EVT_TIME_LOW]: 780575
+  [EVT_ADDR_X -> EVT_TIME_HIGH]: 767793
+  [VECT_8 -> EVT_TIME_LOW]: 163998
+  [VECT_8 -> VECT_BASE_X]: 157955
+  [VECT_8 -> VECT_12]: 64500
+  [EVT_TIME_LOW -> EVT_TIME_LOW]: 16316
+  [VECT_8 -> EVT_TIME_HIGH]: 10853
+  [EVT_TIME_LOW -> EVT_TIME_HIGH]: 1928
+
+=== 3-gram type sequences (top 20) ===
+  [EVT_ADDR_X -> EVT_ADDR_Y -> EVT_ADDR_X]: 40170789
+  [EVT_ADDR_X -> EVT_ADDR_X -> EVT_ADDR_X]: 26233178
+  [EVT_ADDR_Y -> EVT_ADDR_X -> EVT_ADDR_Y]: 22673776
+  [EVT_ADDR_Y -> EVT_ADDR_X -> EVT_ADDR_X]: 20639603
+  [EVT_ADDR_X -> EVT_ADDR_X -> EVT_ADDR_Y]: 17683001
+  [EVT_TIME_LOW -> EVT_ADDR_Y -> EVT_ADDR_X]: 10296690
+  [EVT_ADDR_X -> EVT_TIME_LOW -> EVT_ADDR_Y]: 9560935
+  [EVT_ADDR_Y -> EVT_ADDR_X -> EVT_TIME_LOW]: 6526459
+  [VECT_12 -> VECT_12 -> VECT_8]: 4223281
+  [VECT_BASE_X -> VECT_12 -> VECT_12]: 4158781
+  [EVT_ADDR_X -> EVT_ADDR_X -> EVT_TIME_LOW]: 2881726
+  [VECT_12 -> VECT_8 -> EVT_ADDR_X]: 2812584
+  [EVT_ADDR_X -> VECT_BASE_X -> VECT_12]: 2559191
+  [VECT_8 -> EVT_ADDR_X -> EVT_ADDR_X]: 1553938
+  [EVT_ADDR_Y -> VECT_BASE_X -> VECT_12]: 1441635
+  [EVT_ADDR_X -> EVT_ADDR_X -> VECT_BASE_X]: 1436258
+  [EVT_ADDR_X -> EVT_ADDR_Y -> VECT_BASE_X]: 1169582
+  [EVT_ADDR_Y -> EVT_ADDR_X -> VECT_BASE_X]: 1017283
+  [VECT_12 -> VECT_8 -> EVT_ADDR_Y]: 1013391
+  [VECT_8 -> EVT_ADDR_X -> EVT_ADDR_Y]: 983594
+
+=== VECT_12 (8446562 words) ===
+  avg bits/word : 0.789  (out of 12)
+  events emitted: 6666941
+  popcount distribution:
+     0:  3629339  ########################################
+     1:  3052902  #################################
+     2:  1684263  ##################
+     3:    75109
+     4:     4594
+     5:      325
+     6:       26
+     7:        3
+     8:        1
+
+=== VECT_8 (4223281 words) ===
+  avg bits/word : 0.511  (out of 8)
+  events emitted: 2156459
+  popcount distribution:
+     0:  2551494  ########################################
+     1:  1203628  ##################
+     2:   452331  #######
+     3:    15177
+     4:      620
+     5:       28
+     6:        3
+
+=== VECT_12 run-length distribution ===
+  total runs   : 4223281
+  mean run len : 2.00
+  max run len  : 2
+  run-length histogram (top 15):
+    len   2:  4223281  ########################################
+
+=== CD event sources ===
+  EVT_ADDR_X   :  102661116  (92.1%)
+  from VECT_12 :    6666941  (6.0%)
+  from VECT_8  :    2156459  (1.9%)
+  Total CD     :  111484516
+
+  Words/CD ratio: 1.647
+  CD/word ratio : 0.607

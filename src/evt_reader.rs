@@ -107,7 +107,7 @@ impl<R: Read, D: RawFormatDecoder> BufferedDecoder<R, D> {
     }
 }
 
-impl<R: Read + Send + Sync, D: RawFormatDecoder, O: EventsRepr> DecoderStream<O>
+impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::evt_repr::EventCollection> DecoderStream<O>
     for BufferedDecoder<R, D>
 {
     fn next_batch(&mut self, end_time: u64, max_events: usize) -> Option<O> {
@@ -115,6 +115,12 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: EventsRepr> DecoderStream<O>
         let mut output = O::default();
 
         loop {
+            // Calculate remaining budget for this decode call
+            let remaining_budget = max_events.saturating_sub(output.num_events());
+            if remaining_budget == 0 {
+                return Some(output);
+            }
+
             // If we have data in the buffer, decode from it
             if self.buffer_cursor < self.buffer_len {
                 let usable = self.buffer_len - self.buffer_cursor;
@@ -126,7 +132,7 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: EventsRepr> DecoderStream<O>
 
                     let consumed =
                         self.decoder
-                            .decode(events, &mut output, end_time, max_events);
+                            .decode(events, &mut output, end_time, remaining_budget);
 
                     self.buffer_cursor += consumed * word_size;
 
@@ -137,7 +143,7 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: EventsRepr> DecoderStream<O>
                     }
 
                     // If budget is reached, yield
-                    if output.len() >= max_events {
+                    if output.num_events() >= max_events {
                         return Some(output);
                     }
                 }
@@ -355,7 +361,7 @@ impl<O: EventsRepr> EventDecoder<O> {
     }
 }
 
-impl<O: EventsRepr> Iterator for EventDecoder<O> {
+impl<O: crate::evt_repr::EventCollection> Iterator for EventDecoder<O> {
     type Item = O;
 
     fn next(&mut self) -> Option<O> {
