@@ -54,8 +54,10 @@ impl RawFormatDecoder for Evt2Decoder {
         end_time: u64,
         max_events: usize,
     ) -> usize {
+        let mut decoded_count = 0usize;
+        
         for (idx, evt) in raw_events.iter().enumerate() {
-            if output.len() >= max_events {
+            if decoded_count >= max_events {
                 return idx;
             }
 
@@ -67,6 +69,7 @@ impl RawFormatDecoder for Evt2Decoder {
                     }
                     self.current_time = full_timestamp;
                     output.push_cd(evt.x(), evt.y(), evt.event_type(), full_timestamp);
+                    decoded_count += 1;
                 }
                 EVT_TIME_HIGH => {
                     let th = evt.time_high() << NUM_BITS_IN_TIMESTAMP_LSB;

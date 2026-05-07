@@ -162,7 +162,7 @@ impl AppState {
                 break;
             }
             match self.reader.decoder().next() {
-                Some(batch) => acc.append(batch),
+                Some(mut batch) => acc.append(&mut batch),
                 None => {
                     // End of file with remaining events
                     break;

@@ -50,16 +50,18 @@ impl RawFormatDecoder for Evt21Decoder {
         max_events: usize,
     ) -> usize {
         let mut x_buf: [u16; 32] = [0; 32];
+        let mut decoded_count = 0usize;
 
         // Drain carry from previous partial word first
         if self.carry_mask != 0 {
-            let remaining = max_events.saturating_sub(output.len());
+            let remaining = max_events.saturating_sub(decoded_count);
             if remaining == 0 {
                 return 0;
             }
             let count = expand_mask(&mut x_buf, self.carry_base_x, self.carry_mask);
             let emit = count.min(remaining);
             output.extend_constant_ypt(&x_buf[..emit], self.carry_y, self.carry_p, self.carry_t);
+            decoded_count += emit;
             if emit < count {
                 // Still can't emit all — advance carry past emitted bits
                 let mut mask = self.carry_mask;
@@ -87,9 +89,6 @@ impl RawFormatDecoder for Evt21Decoder {
             (raw_events, 0)
         };
 
-        // Tighter reservation
-        output.reserve(events.len() * 8);
-
         let mut time_high = self.time_high;
         let words: &[u64] = bytemuck::cast_slice(events);
         let mut i = 0usize;
@@ -101,7 +100,7 @@ impl RawFormatDecoder for Evt21Decoder {
 
         // --- SIMD bulk path: 4 words at a time ---
         while i + 4 <= words.len() {
-            if output.len() >= max_events {
+            if decoded_count >= max_events {
                 break;
             }
 
@@ -115,12 +114,12 @@ impl RawFormatDecoder for Evt21Decoder {
                 || types[3] >= EVT_TIME_HIGH as u64
             {
                 for j in 0..4 {
-                    if output.len() >= max_events || time_high >= end_time {
+                    if decoded_count >= max_events || time_high >= end_time {
                         self.time_high = time_high;
                         self.save_carry(&carry);
                         return offset + i + j;
                     }
-                    if !decode_one_generic(words[i + j], &mut time_high, output, &mut x_buf, end_time, max_events, &mut carry) {
+                    if !decode_one_generic(words[i + j], &mut time_high, output, &mut x_buf, end_time, max_events, &mut decoded_count, &mut carry) {
                         self.time_high = time_high;
                         return offset + i + j;
                     }
@@ -146,7 +145,7 @@ impl RawFormatDecoder for Evt21Decoder {
                 if types[lane] > EVT_POS as u64 {
                     continue;
                 }
-                if output.len() >= max_events {
+                if decoded_count >= max_events {
                     self.time_high = time_high;
                     return offset + i + lane;
                 }
@@ -170,8 +169,8 @@ impl RawFormatDecoder for Evt21Decoder {
                 let count = expand_mask(&mut x_buf, base_x, mask);
 
                 // If emitting all would exceed budget, partial emit + carry
-                if output.len() + count > max_events {
-                    let remaining = max_events - output.len();
+                if decoded_count + count > max_events {
+                    let remaining = max_events - decoded_count;
                     output.extend_constant_ypt(&x_buf[..remaining], y, p, full_t);
                     // Store carry: remaining mask bits (skip first `remaining` set bits)
                     let mut carry = mask;
@@ -190,6 +189,7 @@ impl RawFormatDecoder for Evt21Decoder {
 
                 // Constant-field batching via trait method
                 output.extend_constant_ypt(&x_buf[..count], y, p, full_t);
+                decoded_count += count;
             }
 
             i += 4;
@@ -197,10 +197,10 @@ impl RawFormatDecoder for Evt21Decoder {
 
         // --- Scalar tail for remaining < 4 words ---
         while i < words.len() {
-            if output.len() >= max_events || time_high >= end_time {
+            if decoded_count >= max_events || time_high >= end_time {
                 break;
             }
-            if !decode_one_generic(words[i], &mut time_high, output, &mut x_buf, end_time, max_events, &mut carry) {
+            if !decode_one_generic(words[i], &mut time_high, output, &mut x_buf, end_time, max_events, &mut decoded_count, &mut carry) {
                 break;
             }
             if carry.0 != 0 {
@@ -257,6 +257,7 @@ fn decode_one_generic<O: EventsRepr>(
     x_buf: &mut [u16; 32],
     end_time: u64,
     max_events: usize,
+    decoded_count: &mut usize,
     carry: &mut (u32, u16, u16, u8, u64), // (mask, base_x, y, p, t)
 ) -> bool {
     match (w >> 60) as u8 {
@@ -278,10 +279,11 @@ fn decode_one_generic<O: EventsRepr>(
 
             let count = expand_mask(x_buf, base_x, mask);
 
-            if output.len() + count > max_events {
+            if *decoded_count + count > max_events {
                 // Partial emit + carry
-                let remaining = max_events - output.len();
+                let remaining = max_events - *decoded_count;
                 output.extend_constant_ypt(&x_buf[..remaining], y, p, full_t);
+                *decoded_count += remaining;
                 let mut carry_mask = mask;
                 for _ in 0..remaining {
                     carry_mask &= carry_mask - 1;
@@ -291,6 +293,7 @@ fn decode_one_generic<O: EventsRepr>(
             }
 
             output.extend_constant_ypt(&x_buf[..count], y, p, full_t);
+            *decoded_count += count;
             true
         }
         EVT_TIME_HIGH => {

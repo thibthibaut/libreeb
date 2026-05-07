@@ -1,0 +1,445 @@
+ Percent |	Source code & Disassembly of benchmark-c7998bcce61bcc12 for branch-misses:u (299417 samples, percent: local period)
+-----------------------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3      Disassembly of section .text:
+         :
+         : 5      000000000019fc50 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode>:
+    0.00 :   19fc50: push   %rbp
+         : 7      x: 0,
+         : 8      y: 0,
+         : 9      }
+         : 10     }
+         :
+         : 12     fn decode(&mut self, raw_events: &[Evt3], batch: &mut EventBatch) {
+    0.00 :   19fc51: push   %r15
+    0.00 :   19fc53: push   %r14
+    0.00 :   19fc55: push   %r13
+    0.00 :   19fc57: push   %r12
+    0.00 :   19fc59: push   %rbx
+    0.00 :   19fc5a: sub    $0x38,%rsp
+         : 19     let words: &[u16] = bytemuck::cast_slice(raw_events);
+         : 20     let n = words.len();
+         : 21     let mut i = 0usize;
+         :
+         : 23     if !self.has_time_base {
+    0.00 :   19fc5e: cmpb   $0x0,0x19(%rdi)
+    0.00 :   19fc62: je     19ffb7 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x367>
+    0.00 :   19fc68: xor    %ebp,%ebp
+    0.00 :   19fc6a: mov    (%rcx),%r8
+    0.00 :   19fc6d: mov    0x10(%rcx),%rax
+    0.00 :   19fc71: sub    %rax,%r8
+    0.00 :   19fc74: cmp    %r8,%rdx
+    0.00 :   19fc77: ja     1a0040 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3f0>
+    0.00 :   19fc7d: mov    0x18(%rcx),%r8
+    0.00 :   19fc81: mov    0x28(%rcx),%rax
+    0.00 :   19fc85: sub    %rax,%r8
+    0.00 :   19fc88: cmp    %r8,%rdx
+    0.00 :   19fc8b: ja     1a0073 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x423>
+    0.00 :   19fc91: mov    0x30(%rcx),%r8
+    0.00 :   19fc95: mov    0x40(%rcx),%rax
+    0.00 :   19fc99: sub    %rax,%r8
+    0.00 :   19fc9c: cmp    %r8,%rdx
+    0.00 :   19fc9f: ja     1a00aa <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x45a>
+    0.00 :   19fca5: mov    0x48(%rcx),%r8
+    0.00 :   19fca9: mov    0x58(%rcx),%rax
+    0.00 :   19fcad: sub    %rax,%r8
+    0.00 :   19fcb0: cmp    %r8,%rdx
+    0.00 :   19fcb3: ja     1a00e1 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x491>
+         : 47     unsafe {
+         : 48     x_ptr.add(count).write($x);
+         : 49     y_ptr.add(count).write($y);
+         : 50     p_ptr.add(count).write($p);
+         : 51     // Write relative timestamp as u32 (4 bytes instead of 8)
+         : 52     t_ptr.add(count).write(($t - t_offset) as u32);
+    0.00 :   19fcb9: movzwl 0x14(%rdi),%eax
+    0.00 :   19fcbd: mov    0x10(%rcx),%r15
+         : 55     p_ptr.add(count).write($p);
+    0.00 :   19fcc1: movzwl 0x16(%rdi),%r9d
+         : 57     // Write relative timestamp as u32 (4 bytes instead of 8)
+    0.00 :   19fcc6: mov    (%rdi),%r11
+    0.00 :   19fcc9: mov    %eax,0x8(%rsp)
+         : 60     }
+    0.00 :   19fccd: movzbl 0x18(%rdi),%eax
+         : 62     count += 1;
+         : 63     };
+         : 64     }
+    0.00 :   19fcd1: cmp    %rdx,%rbp
+    0.00 :   19fcd4: jae    19fffd <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3ad>
+    0.00 :   19fcda: mov    0x8(%rcx),%rbx
+    0.00 :   19fcde: mov    0x38(%rcx),%r14
+    0.00 :   19fce2: lea    (%r15,%r15,1),%r8
+    0.00 :   19fce6: lea    0x0(,%r15,8),%r13
+    0.00 :   19fcee: add    0x50(%rcx),%r13
+         : 72     count += 1;
+    0.00 :   19fcf2: mov    0x8(%rdi),%r10
+    0.00 :   19fcf6: xor    %r12d,%r12d
+    0.00 :   19fcf9: mov    %r15,0x18(%rsp)
+    0.00 :   19fcfe: add    %r8,%rbx
+    0.00 :   19fd01: add    0x20(%rcx),%r8
+    0.00 :   19fd05: add    %r15,%r14
+    0.00 :   19fd08: mov    %r8,0x20(%rsp)
+    0.00 :   19fd0d: mov    %rbp,%r15
+    0.23 :   19fd10: mov    %eax,0xc(%rsp)
+    1.30 :   19fd14: jmp    19fd56 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x106>
+    0.00 :   19fd16: cs nopw 0x0(%rax,%rax,1)
+    0.00 :   19fd20: mov    0x20(%rsp),%r15
+         :
+         : 86     let mut cur_y = self.y;
+         : 87     let mut cur_t = self.time;
+         : 88     let mut cur_x = self.x;
+         : 89     let mut cur_pol = self.polarity;
+    6.58 :   19fd25: mov    %eax,%r8d
+    0.06 :   19fd28: shr    $0xb,%eax
+    0.26 :   19fd2b: and    $0x7ff,%r8d
+    0.03 :   19fd32: and    $0x1,%al
+    0.33 :   19fd34: mov    %r8w,(%rbx,%r12,2)
+    1.16 :   19fd39: mov    %r9w,(%r15,%r12,2)
+    3.60 :   19fd3e: mov    %al,(%r14,%r12,1)
+    1.08 :   19fd42: mov    %r11,0x0(%r13,%r12,8)
+         : 98     ($x:expr, $y:expr, $t:expr, $p:expr) => {
+    0.27 :   19fd47: inc    %r12
+    0.04 :   19fd4a: mov    %rbp,%r15
+         : 101    }
+    1.53 :   19fd4d: cmp    %rdx,%rbp
+    0.03 :   19fd50: jae    1a0002 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3b2>
+         :
+    0.22 :   19fd56: movzwl (%rsi,%r15,2),%eax
+         : 106    let mut cur_y = self.y;
+    3.22 :   19fd5b: lea    0x1(%r15),%rbp
+         : 108    let mut cur_x = self.x;
+    1.49 :   19fd5f: mov    %eax,%r8d
+    8.03 :   19fd62: and    $0xf000,%r8d
+    0.44 :   19fd69: cmp    $0x2000,%r8w
+    0.09 :   19fd6f: je     19fd20 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xd0>
+         : 113    let mut time_base = self.time_base;
+         :
+         : 115    while i < n {
+         : 116    let w = words[i];
+    0.00 :   19fd71: cmp    $0x1000,%ax
+    8.19 :   19fd75: jae    19fdd3 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x183>
+         : 119    i += 1;
+    0.00 :   19fd77: and    $0x7ff,%eax
+    3.04 :   19fd7c: mov    %eax,%r9d
+         :
+    0.03 :   19fd7f: cmp    %rdx,%rbp
+    0.31 :   19fd82: jae    19fd4a <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xfa>
+         : 125    if w >= 0x2000 && w < 0x3000 {
+    0.00 :   19fd84: movzwl 0x2(%rsi,%r15,2),%eax
+         : 127    emit!(w & 0x07FF, cur_y, cur_t, (w >> 11) as u8 & 1);
+    1.40 :   19fd8a: mov    %eax,%r8d
+    0.75 :   19fd8d: and    $0xf000,%r8d
+    0.00 :   19fd94: cmp    $0x2000,%r8w
+    0.01 :   19fd9a: jne    19fd4a <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xfa>
+    0.00 :   19fd9c: mov    0x20(%rsp),%rbp
+         : 133    continue;
+    0.39 :   19fda1: mov    %eax,%r8d
+    0.40 :   19fda4: shr    $0xb,%eax
+    0.02 :   19fda7: and    $0x7ff,%r8d
+         : 137    }
+    0.00 :   19fdae: add    $0x2,%r15
+         : 139    continue;
+    0.22 :   19fdb2: and    $0x1,%al
+    0.01 :   19fdb4: mov    %r8w,(%rbx,%r12,2)
+    0.23 :   19fdb9: mov    %r9w,0x0(%rbp,%r12,2)
+    0.45 :   19fdbf: mov    %al,(%r14,%r12,1)
+    0.17 :   19fdc3: mov    %r11,0x0(%r13,%r12,8)
+         : 145    ($x:expr, $y:expr, $t:expr, $p:expr) => {
+    0.44 :   19fdc8: inc    %r12
+    0.02 :   19fdcb: mov    %r15,%rbp
+    0.00 :   19fdce: jmp    19fd4a <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xfa>
+         :
+         : 150    if w < 0x1000 {
+         : 151    cur_y = w & 0x07FF;
+         : 152    if i < n {
+         : 153    let next = words[i];
+         : 154    if next >= 0x2000 && next < 0x3000 {
+    0.00 :   19fdd3: mov    %eax,%r15d
+    2.52 :   19fdd6: shr    $0xc,%r15d
+    1.46 :   19fdda: add    $0xfffffffd,%r15d
+    0.01 :   19fdde: cmp    $0x5,%r15d
+    1.28 :   19fde2: ja     19ffa3 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x353>
+    0.00 :   19fde8: mov    %r10,0x10(%rsp)
+    1.80 :   19fded: lea    -0x18ccf8(%rip),%r10        # 130fc <criterion::plot::gnuplot_backend::summary::COMPARISON_COLORS+0x40bc>
+    2.19 :   19fdf4: movslq (%r10,%r15,4),%r8
+    7.71 :   19fdf8: add    %r10,%r8
+    2.18 :   19fdfb: jmp    *%r8
+         : 165    emit!(next & 0x07FF, cur_y, cur_t, (next >> 11) as u8 & 1);
+         : 166    i += 1;
+    0.50 :   19fdfe: mov    %eax,%r8d
+    0.68 :   19fe01: shr    $0xb,%r8d
+         : 169    }
+    0.01 :   19fe05: and    $0x7ff,%eax
+    0.00 :   19fe0a: mov    %eax,0x8(%rsp)
+         : 172    i += 1;
+    0.21 :   19fe0e: and    $0x1,%r8b
+    0.14 :   19fe12: mov    %r8d,0xc(%rsp)
+    0.34 :   19fe17: mov    0x18(%rsp),%r15
+    0.33 :   19fe1c: mov    0x10(%rsp),%r10
+    0.63 :   19fe21: mov    0xc(%rsp),%eax
+         : 178    }
+    1.88 :   19fe25: cmp    %rdx,%rbp
+    0.00 :   19fe28: jb     19fd0d <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xbd>
+    0.00 :   19fe2e: jmp    1a000b <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3bb>
+    0.45 :   19fe33: mov    0x18(%rsp),%r15
+    1.12 :   19fe38: mov    0xc(%rsp),%r10d
+         : 184    cur_x = w & 0x07FF;
+         : 185    }
+         : 186    VECT_12 => {
+         : 187    let mut mask = (w & 0x0FFF) as u32;
+         : 188    while mask != 0 {
+         : 189    let bit = mask.trailing_zeros() as u16;
+    0.70 :   19fe3d: and    $0xff,%eax
+    0.10 :   19fe42: je     19fe7e <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x22e>
+    0.00 :   19fe44: data16 data16 cs nopw 0x0(%rax,%rax,1)
+    0.44 :   19fe50: tzcnt  %eax,%r8d
+         : 194    mask &= mask - 1;
+         : 195    emit!(cur_x + bit, cur_y, cur_t, cur_pol);
+         : 196    }
+    1.23 :   19fe55: add    0x8(%rsp),%r8d
+         : 198    let bit = mask.trailing_zeros() as u16;
+    1.85 :   19fe5a: blsr   %eax,%eax
+    0.04 :   19fe5f: mov    %r8w,(%rbx,%r12,2)
+    0.27 :   19fe64: mov    0x20(%rsp),%r8
+    0.07 :   19fe69: mov    %r9w,(%r8,%r12,2)
+    0.72 :   19fe6e: mov    %r10b,(%r14,%r12,1)
+    0.19 :   19fe72: mov    %r11,0x0(%r13,%r12,8)
+         : 205    ($x:expr, $y:expr, $t:expr, $p:expr) => {
+    0.44 :   19fe77: lea    0x1(%r12),%r12
+         : 207    let bit = mask.trailing_zeros() as u16;
+    0.61 :   19fe7c: jne    19fe50 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x200>
+         : 209    cur_x += 12;
+         : 210    }
+    0.00 :   19fe7e: addl   $0x8,0x8(%rsp)
+    1.10 :   19fe83: mov    0x10(%rsp),%r10
+    1.73 :   19fe88: mov    0xc(%rsp),%eax
+         : 214    }
+    0.15 :   19fe8c: cmp    %rdx,%rbp
+    0.00 :   19fe8f: jb     19fd0d <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xbd>
+    0.00 :   19fe95: jmp    1a000b <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3bb>
+    0.82 :   19fe9a: mov    0x18(%rsp),%r15
+    0.76 :   19fe9f: mov    0xc(%rsp),%r10d
+         :
+    0.15 :   19fea4: and    $0xfff,%eax
+    0.12 :   19fea9: je     19fede <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x28e>
+    0.00 :   19feab: nopl   0x0(%rax,%rax,1)
+    1.27 :   19feb0: tzcnt  %eax,%r8d
+         : 225    cur_pol = (w >> 11) as u8 & 1;
+    1.39 :   19feb5: add    0x8(%rsp),%r8d
+         :
+    2.42 :   19feba: blsr   %eax,%eax
+    0.01 :   19febf: mov    %r8w,(%rbx,%r12,2)
+    0.27 :   19fec4: mov    0x20(%rsp),%r8
+    0.41 :   19fec9: mov    %r9w,(%r8,%r12,2)
+    1.88 :   19fece: mov    %r10b,(%r14,%r12,1)
+    0.33 :   19fed2: mov    %r11,0x0(%r13,%r12,8)
+         : 234    ($x:expr, $y:expr, $t:expr, $p:expr) => {
+    0.48 :   19fed7: lea    0x1(%r12),%r12
+         :
+    0.25 :   19fedc: jne    19feb0 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x260>
+         : 238    }
+    0.00 :   19fede: addl   $0xc,0x8(%rsp)
+    4.94 :   19fee3: mov    0x10(%rsp),%r10
+    1.38 :   19fee8: mov    0xc(%rsp),%eax
+         : 242    }
+    0.29 :   19feec: cmp    %rdx,%rbp
+    0.00 :   19feef: jb     19fd0d <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xbd>
+    0.00 :   19fef5: jmp    1a000b <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3bb>
+    0.01 :   19fefa: mov    0x18(%rsp),%r15
+         : 247    VECT_8 => {
+         : 248    let mut mask = (w & 0x00FF) as u32;
+         : 249    while mask != 0 {
+    1.01 :   19feff: and    $0xfff,%eax
+         : 251    let bit = mask.trailing_zeros() as u16;
+    0.00 :   19ff04: and    $0xfff,%r11d
+         : 253    mask &= mask - 1;
+    0.00 :   19ff0b: cmp    %eax,%r11d
+    0.00 :   19ff0e: jbe    19ff22 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x2d2>
+    0.00 :   19ff10: mov    0x10(%rsp),%r10
+         : 257    emit!(cur_x + bit, cur_y, cur_t, cur_pol);
+    0.00 :   19ff15: add    $0x1000,%r10
+         : 259    }
+    0.00 :   19ff1c: mov    %r10,0x8(%rdi)
+    0.00 :   19ff20: jmp    19ff27 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x2d7>
+    0.00 :   19ff22: mov    0x10(%rsp),%r10
+         : 263    cur_x += 8;
+         : 264    }
+    0.24 :   19ff27: or     %r10,%rax
+    0.08 :   19ff2a: mov    %rax,%r11
+    0.00 :   19ff2d: mov    0xc(%rsp),%eax
+         : 268    }
+    0.12 :   19ff31: cmp    %rdx,%rbp
+    0.00 :   19ff34: jb     19fd0d <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xbd>
+    0.00 :   19ff3a: jmp    1a000b <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3bb>
+    0.00 :   19ff3f: mov    0x8(%rsp),%r8d
+         : 273    EVT_TIME_LOW => {
+         : 274    let low = (w & 0x0FFF) as u64;
+         : 275    let prev_low = cur_t & 0x0FFF;
+    0.07 :   19ff44: mov    %r9w,0x16(%rdi)
+    0.00 :   19ff49: mov    %rdi,0x10(%rsp)
+    0.00 :   19ff4e: mov    %rsi,0x30(%rsp)
+         : 279    if low < prev_low {
+         : 280    time_base += 1 << 12;
+         : 281    self.time_base = time_base;
+         : 282    }
+    0.00 :   19ff53: mov    %eax,%esi
+    0.00 :   19ff55: mov    %rcx,%r15
+    0.00 :   19ff58: mov    %rdx,0x28(%rsp)
+         : 286    if low < prev_low {
+    0.00 :   19ff5d: mov    %r8w,0x14(%rdi)
+    0.01 :   19ff62: mov    0xc(%rsp),%r8d
+         : 289    time_base += 1 << 12;
+    0.00 :   19ff67: mov    %r8b,0x18(%rdi)
+    0.00 :   19ff6b: mov    0x10(%rsp),%rdi
+         : 292    }
+    0.02 :   19ff70: call   1a0120 <libreeb::evt3::Evt3Decoder::handle_time_high>
+    0.01 :   19ff75: mov    0x10(%rsp),%rdi
+    0.00 :   19ff7a: mov    0x30(%rsp),%rsi
+    0.00 :   19ff7f: mov    0x28(%rsp),%rdx
+    0.00 :   19ff84: mov    %r15,%rcx
+         : 298    cur_t = time_base | low;
+         : 299    }
+         : 300    EVT_TIME_HIGH => {
+         : 301    self.y = cur_y;
+    0.00 :   19ff87: movzwl 0x14(%rdi),%eax
+         : 303    cur_t = time_base | low;
+    0.01 :   19ff8b: mov    (%rdi),%r11
+         : 305    }
+    0.02 :   19ff8e: mov    0x8(%rdi),%r10
+         : 307    EVT_TIME_HIGH => {
+    0.00 :   19ff92: movzwl 0x16(%rdi),%r9d
+    0.00 :   19ff97: mov    %eax,0x8(%rsp)
+         : 310    self.x = cur_x;
+    0.00 :   19ff9b: movzbl 0x18(%rdi),%eax
+    0.01 :   19ff9f: mov    %eax,0xc(%rsp)
+    0.00 :   19ffa3: mov    0x18(%rsp),%r15
+    0.00 :   19ffa8: mov    0xc(%rsp),%eax
+         : 315    }
+    0.01 :   19ffac: cmp    %rdx,%rbp
+    0.00 :   19ffaf: jb     19fd0d <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0xbd>
+    0.00 :   19ffb5: jmp    1a000b <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3bb>
+    0.00 :   19ffb7: xor    %ebp,%ebp
+    0.00 :   19ffb9: nopl   0x0(%rax)
+         : 321    while i < n {
+    0.00 :   19ffc0: cmp    %rbp,%rdx
+    0.00 :   19ffc3: je     1a0031 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3e1>
+         : 324    let w = words[i];
+    0.00 :   19ffc5: movzwl (%rsi,%rbp,2),%eax
+         : 326    i += 1;
+    0.00 :   19ffc9: inc    %rbp
+         : 328    if (w >> 12) as u8 == EVT_TIME_HIGH {
+    0.00 :   19ffcc: cmp    $0x9000,%ax
+    0.00 :   19ffd0: jge    19ffc0 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x370>
+    0.00 :   19ffd2: mov    %rsi,%r14
+         : 332    self.handle_time_high(w);
+    0.00 :   19ffd5: mov    %eax,%esi
+    0.00 :   19ffd7: mov    %rdi,%rbx
+    0.00 :   19ffda: mov    %rcx,%r15
+    0.00 :   19ffdd: mov    %rdx,%r12
+    0.00 :   19ffe0: call   1a0120 <libreeb::evt3::Evt3Decoder::handle_time_high>
+         : 338    if !self.has_time_base {
+    0.00 :   19ffe5: cmpb   $0x0,0x19(%rbx)
+    0.00 :   19ffe9: mov    %r14,%rsi
+    0.00 :   19ffec: mov    %r12,%rdx
+    0.00 :   19ffef: mov    %r15,%rcx
+    0.00 :   19fff2: mov    %rbx,%rdi
+    0.00 :   19fff5: jne    19fc6a <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x1a>
+    0.00 :   19fffb: jmp    1a0031 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3e1>
+    0.00 :   19fffd: xor    %r12d,%r12d
+    0.00 :   1a0000: jmp    1a000b <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x3bb>
+    0.00 :   1a0002: mov    0x18(%rsp),%r15
+    0.00 :   1a0007: mov    0xc(%rsp),%eax
+         : 350    self.handle_time_high(w);
+         : 351    cur_t = self.time;
+         : 352    time_base = self.time_base;
+         : 353    cur_y = self.y;
+         : 354    cur_x = self.x;
+         : 355    cur_pol = self.polarity;
+    0.00 :   1a000b: add    %r15,%r12
+         : 357    }
+         : 358    _ => {}
+         : 359    }
+         : 360    }
+         :
+         : 362    // Commit — set_len is the only unsafe operation that matters
+    0.00 :   1a000e: mov    %r9w,0x16(%rdi)
+         : 364    unsafe {
+    0.00 :   1a0013: mov    %r11,(%rdi)
+    0.00 :   1a0016: mov    %r12,0x10(%rcx)
+    0.00 :   1a001a: mov    %r12,0x28(%rcx)
+    0.00 :   1a001e: mov    %r12,0x40(%rcx)
+    0.00 :   1a0022: mov    %r12,0x58(%rcx)
+    0.00 :   1a0026: mov    0x8(%rsp),%ecx
+         : 371    batch.x.set_len(start + count);
+    0.00 :   1a002a: mov    %cx,0x14(%rdi)
+         : 373    batch.y.set_len(start + count);
+    0.00 :   1a002e: mov    %al,0x18(%rdi)
+         : 375    batch.p.set_len(start + count);
+    0.00 :   1a0031: add    $0x38,%rsp
+    0.00 :   1a0035: pop    %rbx
+    0.00 :   1a0036: pop    %r12
+    0.00 :   1a0038: pop    %r13
+    0.00 :   1a003a: pop    %r14
+    0.00 :   1a003c: pop    %r15
+    0.00 :   1a003e: pop    %rbp
+    0.00 :   1a003f: ret
+    0.00 :   1a0040: mov    %rcx,%rbx
+    0.00 :   1a0043: mov    $0x2,%ecx
+    0.00 :   1a0048: mov    $0x2,%r8d
+    0.00 :   1a004e: mov    %rdi,%r15
+    0.00 :   1a0051: mov    %rsi,%r12
+    0.00 :   1a0054: mov    %rbx,%rdi
+    0.00 :   1a0057: mov    %rax,%rsi
+    0.00 :   1a005a: mov    %rdx,%r14
+    0.00 :   1a005d: call   19bd10 <alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle>
+    0.00 :   1a0062: mov    %r12,%rsi
+    0.00 :   1a0065: mov    %r14,%rdx
+    0.00 :   1a0068: mov    %rbx,%rcx
+    0.00 :   1a006b: mov    %r15,%rdi
+    0.00 :   1a006e: jmp    19fc7d <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x2d>
+    0.00 :   1a0073: lea    0x18(%rcx),%r9
+    0.00 :   1a0077: mov    %rcx,%r14
+    0.00 :   1a007a: mov    $0x2,%ecx
+    0.00 :   1a007f: mov    $0x2,%r8d
+    0.00 :   1a0085: mov    %rdi,%r15
+    0.00 :   1a0088: mov    %rsi,%r12
+    0.00 :   1a008b: mov    %rax,%rsi
+    0.00 :   1a008e: mov    %rdx,%rbx
+    0.00 :   1a0091: mov    %r9,%rdi
+    0.00 :   1a0094: call   19bd10 <alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle>
+    0.00 :   1a0099: mov    %r12,%rsi
+    0.00 :   1a009c: mov    %rbx,%rdx
+    0.00 :   1a009f: mov    %r14,%rcx
+    0.00 :   1a00a2: mov    %r15,%rdi
+    0.00 :   1a00a5: jmp    19fc91 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x41>
+    0.00 :   1a00aa: lea    0x30(%rcx),%r9
+    0.00 :   1a00ae: mov    %rcx,%r14
+    0.00 :   1a00b1: mov    $0x1,%ecx
+    0.00 :   1a00b6: mov    $0x1,%r8d
+    0.00 :   1a00bc: mov    %rdi,%r15
+    0.00 :   1a00bf: mov    %rsi,%r12
+    0.00 :   1a00c2: mov    %rax,%rsi
+    0.00 :   1a00c5: mov    %rdx,%rbx
+    0.00 :   1a00c8: mov    %r9,%rdi
+    0.00 :   1a00cb: call   19bd10 <alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle>
+    0.00 :   1a00d0: mov    %r12,%rsi
+    0.00 :   1a00d3: mov    %rbx,%rdx
+    0.00 :   1a00d6: mov    %r14,%rcx
+    0.00 :   1a00d9: mov    %r15,%rdi
+    0.00 :   1a00dc: jmp    19fca5 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x55>
+    0.00 :   1a00e1: lea    0x48(%rcx),%r9
+    0.00 :   1a00e5: mov    %rcx,%r14
+    0.00 :   1a00e8: mov    $0x8,%ecx
+    0.00 :   1a00ed: mov    $0x8,%r8d
+    0.00 :   1a00f3: mov    %rdi,%r15
+    0.00 :   1a00f6: mov    %rsi,%r12
+    0.00 :   1a00f9: mov    %rax,%rsi
+    0.00 :   1a00fc: mov    %rdx,%rbx
+    0.00 :   1a00ff: mov    %r9,%rdi
+    0.00 :   1a0102: call   19bd10 <alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle>
+    0.00 :   1a0107: mov    %r12,%rsi
+    0.00 :   1a010a: mov    %rbx,%rdx
+    0.00 :   1a010d: mov    %r14,%rcx
+    0.00 :   1a0110: mov    %r15,%rdi
+    0.00 :   1a0113: jmp    19fcb9 <<libreeb::evt3::Evt3Decoder as libreeb::EventDecoder>::decode+0x69>
