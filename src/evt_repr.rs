@@ -165,19 +165,11 @@ impl DecodeInto for EventSoA {
             return;
         }
         
-        // Reserve space once
-        let current_len = self.x.len();
-        let new_len = current_len + count;
-        
-        self.x.reserve(count);
-        self.y.reserve(count);
-        self.p.reserve(count);
-        self.t.reserve(count);
-        
-        // Fast path: extend x with memcpy
+        // Extend x first (this is the source of truth for the new length)
         self.x.extend_from_slice(xs);
         
-        // Resize and fill with constant values - compiler optimizes these to memset-like operations
+        // Now resize y, p, t to match x's length
+        let new_len = self.x.len();
         self.y.resize(new_len, y);
         self.p.resize(new_len, p);
         self.t.resize(new_len, t);

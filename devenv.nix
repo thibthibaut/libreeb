@@ -22,7 +22,7 @@
   languages.rust = {
     enable = true;
     # https://devenv.sh/reference/options/#languagesrustchannel
-    channel = "stable";
+    channel = "nightly";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer"  ];
     targets = [ "wasm32-unknown-unknown" "x86_64-unknown-linux-musl" ];
   };
