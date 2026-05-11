@@ -158,6 +158,10 @@ pub enum RawFileReaderError {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait DecodeInto: Default + Send {
+    /// Reserve storage for at least `additional` more CD events.
+    #[inline]
+    fn reserve_cd(&mut self, _additional: usize) {}
+
     /// Push a single CD event.
     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64);
 
@@ -180,6 +184,20 @@ pub trait DecodeInto: Default + Send {
         for &x in xs {
             self.push_cd(x, y, p, t);
         }
+    }
+
+    /// Bulk push where x values are encoded as a bit mask from a base x.
+    #[inline]
+    fn extend_masked_xs(&mut self, base_x: u16, y: u16, p: u8, t: u64, mut mask: u32) {
+        let mut xs = [0; 32];
+        let mut len = 0;
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as u16;
+            mask &= mask - 1;
+            xs[len] = base_x + bit;
+            len += 1;
+        }
+        self.extend_constant_ypt(&xs[..len], y, p, t);
     }
 
     // ── Optional event types (default: discard) ────────────────────────
