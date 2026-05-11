@@ -96,6 +96,14 @@ impl Default for EventSoA {
 
 impl DecodeInto for EventSoA {
     #[inline]
+    fn reserve_cd(&mut self, additional: usize) {
+        self.x.reserve(additional);
+        self.y.reserve(additional);
+        self.p.reserve(additional);
+        self.t.reserve(additional);
+    }
+
+    #[inline]
     fn push_cd(&mut self, x: u16, y: u16, p: u8, t: u64) {
         self.x.push(x);
         self.y.push(y);
@@ -110,6 +118,7 @@ impl DecodeInto for EventSoA {
 
     #[inline]
     fn extend_from_soa(&mut self, x: &[u16], y: &[u16], p: &[u8], t: &[u64]) {
+        self.reserve_cd(x.len());
         self.x.extend_from_slice(x);
         self.y.extend_from_slice(y);
         self.p.extend_from_slice(p);
@@ -118,11 +127,25 @@ impl DecodeInto for EventSoA {
 
     #[inline]
     fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
+        self.reserve_cd(xs.len());
         self.x.extend_from_slice(xs);
         let new_len = self.y.len() + xs.len();
         self.y.resize(new_len, y);
         self.p.resize(new_len, p);
         self.t.resize(new_len, t);
+    }
+
+    #[inline]
+    fn extend_masked_xs(&mut self, base_x: u16, y: u16, p: u8, t: u64, mut mask: u32) {
+        self.reserve_cd(mask.count_ones() as usize);
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as u16;
+            mask &= mask - 1;
+            self.x.push(base_x + bit);
+            self.y.push(y);
+            self.p.push(p);
+            self.t.push(t);
+        }
     }
 }
 

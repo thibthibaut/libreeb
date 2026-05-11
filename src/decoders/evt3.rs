@@ -45,6 +45,11 @@ pub struct Evt3Decoder {
 impl RawFormatDecoder for Evt3Decoder {
     type RawEventType = Evt3;
 
+    fn output_capacity_hint(raw_events: usize) -> usize {
+        // EVT3 has roughly 1 CD event per raw word on average
+        raw_events
+    }
+
     fn new() -> Self {
         Evt3Decoder {
             time: 0,

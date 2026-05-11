@@ -22,6 +22,12 @@ pub(crate) trait RawFormatDecoder: Send + Sync {
     type RawEventType: bytemuck::Pod + Copy;
     fn new() -> Self;
 
+    /// Expected decoded CD events for one raw input buffer.
+    fn output_capacity_hint(raw_events: usize) -> usize {
+        let _ = raw_events;
+        0
+    }
+
     /// Decode raw events into the output, respecting budget limits.
     ///
     /// Returns the number of raw events consumed from the input (may be less
@@ -112,7 +118,8 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::events::EventCollecti
 {
     fn next_batch(&mut self, end_time: u64, max_events: usize) -> Option<O> {
         let word_size = std::mem::size_of::<D::RawEventType>();
-        let mut output = O::default();
+        let capacity = D::output_capacity_hint(READ_BUFFER_SIZE / word_size).min(max_events);
+        let mut output = O::with_capacity(capacity);
 
         loop {
             // Calculate remaining budget for this decode call

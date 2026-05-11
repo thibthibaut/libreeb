@@ -39,6 +39,10 @@ pub struct Evt21Decoder {
 impl RawFormatDecoder for Evt21Decoder {
     type RawEventType = Evt21;
 
+    fn output_capacity_hint(raw_events: usize) -> usize {
+        raw_events.saturating_mul(8)
+    }
+
     fn new() -> Self {
         Self::default()
     }
@@ -128,13 +132,13 @@ impl RawFormatDecoder for Evt21Decoder {
                         continue;
                     }
 
-                    // Expand mask into x coordinates
-                    let count = expand_mask(&mut x_buf, base_x, mask);
+                    let count = mask.count_ones() as usize;
 
                     // Check if we can emit all events from this word
                     if decoded_count + count > max_events {
                         // Partial emit: emit what we can, save the rest as carry
                         let remaining = max_events - decoded_count;
+                        expand_mask(&mut x_buf, base_x, mask);
                         output.extend_constant_ypt(&x_buf[..remaining], y, p, full_t);
 
                         // Compute remaining mask (skip first `remaining` set bits)
@@ -153,7 +157,7 @@ impl RawFormatDecoder for Evt21Decoder {
                     }
 
                     // Emit all events from this word
-                    output.extend_constant_ypt(&x_buf[..count], y, p, full_t);
+                    output.extend_masked_xs(base_x, y, p, full_t, mask);
                     decoded_count += count;
                 }
 
