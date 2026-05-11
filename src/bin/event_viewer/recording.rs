@@ -1,6 +1,6 @@
 //! Recording state for capturing raw event bytes to file.
 
-use libreeb::header::RawFileHeader;
+use libreeb::io::header::RawFileHeader;
 use std::collections::HashMap;
 
 /// Recording state for capturing raw bytes to a .raw file.
@@ -72,10 +72,10 @@ impl RecordingState {
         
         // Write event type
         let event_type_str = match header.event_type {
-            libreeb::header::RawEventType::Evt2 => "EVT2",
-            libreeb::header::RawEventType::Evt21 => "EVT2.1",
-            libreeb::header::RawEventType::Evt3 => "EVT3",
-            libreeb::header::RawEventType::Evt4 => "EVT4",
+            libreeb::io::header::RawEventType::Evt2 => "EVT2",
+            libreeb::io::header::RawEventType::Evt21 => "EVT2.1",
+            libreeb::io::header::RawEventType::Evt3 => "EVT3",
+            libreeb::io::header::RawEventType::Evt4 => "EVT4",
         };
         self.buffer.extend_from_slice(b"% evt ");
         self.buffer.extend_from_slice(event_type_str.as_bytes());

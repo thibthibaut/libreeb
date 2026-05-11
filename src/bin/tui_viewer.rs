@@ -14,8 +14,8 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use libreeb::{
-    header::CameraGeometry, 
-    processors::FrameGenerator, 
+    io::header::CameraGeometry, 
+    processing::FrameGenerator, 
     RawFileReader
 };
 use ratatui::{

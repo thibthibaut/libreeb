@@ -3,7 +3,7 @@
 use super::{calculate_rate, Producer};
 use crate::recording::RecordingState;
 use image::RgbImage;
-use libreeb::{header::RawFileHeader, SliceBy};
+use libreeb::{io::header::RawFileHeader, SliceBy};
 use std::sync::{Arc, Mutex};
 
 pub struct WasmShared {

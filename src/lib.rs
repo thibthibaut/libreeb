@@ -1,5 +1,5 @@
-use evt_reader::BufferedDecoder;
-use std::io::{self, BufReader, Read};
+use io::reader::BufferedDecoder;
+use std::io::{BufReader, Read};
 use thiserror::Error;
 
 // pyo3 — native only with python feature
@@ -11,40 +11,43 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// Re-export decoder raw event types as public
-pub use evt2::Evt2;
-pub use evt2_1::Evt21;
-pub use evt3::Evt3;
+// ── Public API ───────────────────────────────────────────────────────────────
 
-// Re-export the public EventDecoder (the user-facing API)
-pub use evt_reader::EventDecoder;
+// Core modules
+pub mod events;
+pub mod decoders;
+pub mod io;
+pub mod processing;
 
-// Re-export event representation types
-pub use evt_repr::{EventAoS, EventBatch, EventCD, EventCollection, EventSoA, Trigger};
+// Re-export event types
+pub use events::{EventCD, EventSoA, EventAoS, EventBatch, EventCollection, Trigger};
 
-pub mod biases;
-pub mod evt2;
-pub mod evt2_1;
-pub mod evt3;
-pub mod evt_reader;
-pub mod evt_repr;
-pub mod header;
+// Re-export decoders
+pub use decoders::{Evt2, Evt21, Evt3};
+
+// Re-export I/O types
+pub use io::{EventDecoder, RawEventType, RawFileHeader, CameraGeometry};
+
+// Re-export processing
+pub use processing::FrameGenerator;
+
+// Re-export biases for compatibility
+pub mod biases {
+    pub use crate::io::biases::*;
+}
+
+// Camera exports (conditional)
+#[cfg(all(not(target_arch = "wasm32"), feature = "camera"))]
+pub use io::camera::CameraReader;
+
+#[cfg(target_arch = "wasm32")]
+pub use io::camera_web::WasmCameraReader;
+
+// Internal modules
 mod macros;
-pub mod processors;
-pub mod tee_reader;
-
-// Camera module: native uses rusb, WASM uses WebUSB
-#[cfg(all(not(target_arch = "wasm32"), feature = "camera"))]
-pub mod camera;
-#[cfg(target_arch = "wasm32")]
-pub mod camera_web;
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "camera"))]
-pub use camera::CameraReader;
-#[cfg(target_arch = "wasm32")]
-pub use camera_web::WasmCameraReader;
-
-pub use header::{CameraGeometry, RawEventType, RawFileHeader};
+pub mod tee_reader {
+    pub use crate::io::tee::*;
+}
 
 // ── SliceBy ──────────────────────────────────────────────────────────────────
 
@@ -78,7 +81,7 @@ pub enum SliceBy {
 pub enum RawFileReaderError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("Failed to open file at path {0}")]
-    FileOpenError(PathBuf, #[source] io::Error),
+    FileOpenError(PathBuf, #[source] std::io::Error),
 
     #[error("Failed to read the content of the file")]
     ReadBytesFailed,
@@ -222,16 +225,19 @@ impl Stage {
         }
     }
 
-    /// Push a single event without bounds checking.
-    /// Caller must ensure buffer is not full.
+    /// Push a single event to the stage buffer.
+    ///
+    /// # Panics
+    /// Panics in debug builds if the buffer is full. In release builds, the
+    /// compiler should optimize away the bounds check since is_full() is
+    /// always checked before calling this.
     #[inline(always)]
-    pub fn push_unchecked(&mut self, x: u16, y: u16, p: u8, t: u64) {
-        unsafe {
-            *self.x.get_unchecked_mut(self.len) = x;
-            *self.y.get_unchecked_mut(self.len) = y;
-            *self.p.get_unchecked_mut(self.len) = p;
-            *self.t.get_unchecked_mut(self.len) = t;
-        }
+    pub fn push(&mut self, x: u16, y: u16, p: u8, t: u64) {
+        debug_assert!(self.len < STAGE_CAP, "Stage buffer overflow");
+        self.x[self.len] = x;
+        self.y[self.len] = y;
+        self.p[self.len] = p;
+        self.t[self.len] = t;
         self.len += 1;
     }
 
@@ -257,18 +263,6 @@ impl Stage {
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
-    }
-
-    /// Push 8 events at once (from SIMD-extracted arrays).
-    /// y and t are constant across all 8 events.
-    #[inline(always)]
-    pub fn push_8(&mut self, x: [u16; 8], y: u16, p: [u8; 8], t: u64) {
-        let base = self.len;
-        self.x[base..base + 8].copy_from_slice(&x);
-        self.y[base..base + 8].fill(y);
-        self.p[base..base + 8].copy_from_slice(&p);
-        self.t[base..base + 8].fill(t);
-        self.len += 8;
     }
 }
 
@@ -297,17 +291,15 @@ fn make_decoder<R: Read + Send + Sync + 'static>(
 /// a different output format (e.g., events + triggers, histograms, etc.).
 pub fn make_decoder_generic<
     R: Read + Send + Sync + 'static,
-    O: evt_repr::EventCollection + 'static,
+    O: events::EventCollection + 'static,
 >(
     reader: BufReader<R>,
     event_type: RawEventType,
 ) -> Result<EventDecoder<O>, RawFileReaderError> {
-    use evt2::Evt2Decoder;
-    use evt2_1::Evt21Decoder;
-    use evt3::Evt3Decoder;
-    use evt_reader::RawFormatDecoder;
+    use decoders::{Evt2Decoder, Evt21Decoder, Evt3Decoder};
+    use io::reader::RawFormatDecoder;
 
-    let stream: Box<dyn evt_reader::DecoderStream<O>> = match event_type {
+    let stream: Box<dyn io::reader::DecoderStream<O>> = match event_type {
         RawEventType::Evt2 => Box::new(BufferedDecoder::new(reader, Evt2Decoder::new())),
         RawEventType::Evt21 => Box::new(BufferedDecoder::new(reader, Evt21Decoder::new())),
         RawEventType::Evt3 => Box::new(BufferedDecoder::new(reader, Evt3Decoder::new())),
@@ -324,7 +316,7 @@ impl RawFileReader {
         let file =
             File::open(path).map_err(|e| RawFileReaderError::FileOpenError(path.into(), e))?;
         let mut reader = BufReader::with_capacity(64 * 1024, file);
-        let header = header::parse_header(&mut reader)?;
+        let header = io::header::parse_header(&mut reader)?;
         let decoder = make_decoder(reader, header.event_type)?;
         Ok(RawFileReader {
             header,
@@ -338,7 +330,7 @@ impl RawFileReader {
         reader: R,
     ) -> Result<Self, RawFileReaderError> {
         let mut buf_reader = BufReader::with_capacity(64 * 1024, reader);
-        let header = header::parse_header(&mut buf_reader)?;
+        let header = io::header::parse_header(&mut buf_reader)?;
         let decoder = make_decoder(buf_reader, header.event_type)?;
         Ok(RawFileReader {
             header,
@@ -419,7 +411,7 @@ impl RawFileReader {
             PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open file: {}", e))
         })?;
         let mut reader = BufReader::with_capacity(64 * 1024, file);
-        let _header = header::parse_header(&mut reader).map_err(|e| {
+        let _header = io::header::parse_header(&mut reader).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                 "Failed to parse header: {}",
                 e
