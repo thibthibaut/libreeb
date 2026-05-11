@@ -16,9 +16,9 @@ use eframe::egui;
 use image::RgbImage;
 #[cfg(target_arch = "wasm32")]
 use libreeb::{
-    biases::{BiasGroup, BIAS_TABLE},
-    header::{CameraGeometry, RawFileHeader},
-    processors::FrameGenerator,
+    io::biases::{BiasGroup, BIAS_TABLE},
+    io::header::{CameraGeometry, RawFileHeader},
+    processing::FrameGenerator,
     RawFileReader, SliceBy,
 };
 #[cfg(target_arch = "wasm32")]
@@ -467,7 +467,7 @@ fn start_open_camera_wasm() -> WasmState {
 
 #[cfg(target_arch = "wasm32")]
 async fn open_camera_wasm_async() -> Result<ViewerState, String> {
-    use libreeb::camera_web::WasmCameraReader;
+    use libreeb::io::camera_web::WasmCameraReader;
     use producers::camera::WasmShared;
 
     let camera = WasmCameraReader::open()
@@ -506,7 +506,7 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     // Create a minimal header for camera mode
     let header = RawFileHeader {
         header_dict: std::collections::HashMap::new(),
-        event_type: libreeb::header::RawEventType::Evt3, // EVK4 uses EVT3
+        event_type: libreeb::io::header::RawEventType::Evt3, // EVK4 uses EVT3
         camera_geometry: geometry,
     };
     let mut slice = SliceBy::Time(33_333);

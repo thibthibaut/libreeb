@@ -5,7 +5,7 @@ use crate::recording::RecordingState;
 #[cfg(target_arch = "wasm32")]
 use image::RgbImage;
 #[cfg(target_arch = "wasm32")]
-use libreeb::{header::RawFileHeader, SliceBy};
+use libreeb::{io::header::RawFileHeader, SliceBy};
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Arc, Mutex};
 

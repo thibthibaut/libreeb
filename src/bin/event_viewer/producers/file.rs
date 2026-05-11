@@ -4,8 +4,8 @@ use super::{calculate_rate, Producer};
 use crate::recording::RecordingState;
 use image::RgbImage;
 use libreeb::{
-    header::{CameraGeometry, RawFileHeader},
-    processors::FrameGenerator, EventBatch, EventDecoder, RawFileReader, SliceBy,
+    io::header::{CameraGeometry, RawFileHeader},
+    processing::FrameGenerator, EventBatch, EventDecoder, RawFileReader, SliceBy,
 };
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
