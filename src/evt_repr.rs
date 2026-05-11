@@ -158,18 +158,10 @@ impl DecodeInto for EventSoA {
         self.t.extend_from_slice(t);
     }
 
-    #[inline(always)]
+    #[inline]
     fn extend_constant_ypt(&mut self, xs: &[u16], y: u16, p: u8, t: u64) {
-        let count = xs.len();
-        if count == 0 {
-            return;
-        }
-        
-        // Extend x first (this is the source of truth for the new length)
         self.x.extend_from_slice(xs);
-        
-        // Now resize y, p, t to match x's length
-        let new_len = self.x.len();
+        let new_len = self.y.len() + xs.len();
         self.y.resize(new_len, y);
         self.p.resize(new_len, p);
         self.t.resize(new_len, t);
