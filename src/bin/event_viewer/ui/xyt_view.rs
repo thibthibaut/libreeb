@@ -67,15 +67,22 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
     let pt_size = v.xyt_point_size;
 
     // ── Collect and project events ────────────────────────────────────────────
-    // Iterate all stored batches (oldest → newest); every event in every batch
-    // is rendered — count is naturally bounded by the 60-slice cap.
+    // Per-batch subsampling: each batch gets an equal share of the display
+    // budget.  Sparse batches (few events) use step=1 and show every event;
+    // dense batches are subsampled so the total stays near MAX_DISPLAY_POINTS.
+    // This gives visually balanced temporal density across the cloud.
+    const MAX_DISPLAY_POINTS: usize = 30_000;
+    let num_batches      = v.xyt_buffer.len().max(1);
+    let budget_per_batch = (MAX_DISPLAY_POINTS / num_batches).max(1);
+
     for batch in v.xyt_buffer.iter() {
-        for evt in batch {
+        let step = (batch.len() / budget_per_batch).max(1);
+        for i in (0..batch.len()).step_by(step) {
             // Normalise to [−0.5, +0.5].
             // Y is flipped: sensor row 0 (top) → +0.5 in 3-D (up).
-            let nx =  (evt.x as f32 * inv_w) - 0.5;
-            let ny =  0.5 - (evt.y as f32 * inv_h);
-            let nt =  ((evt.t - oldest_t) as f32 / t_range) - 0.5;
+            let nx =  (batch.x[i] as f32 * inv_w) - 0.5;
+            let ny =  0.5 - (batch.y[i] as f32 * inv_h);
+            let nt =  ((batch.t[i] - oldest_t) as f32 / t_range) - 0.5;
 
             // Rotate: azimuth around Y, then elevation around X.
             let rx =  nx * ca + nt * sa;
@@ -91,7 +98,7 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
             let sx = cx + fx / (fz + d) * scale;
             let sy = cy - fy / (fz + d) * scale;
 
-            let color = if evt.p != 0 {
+            let color = if batch.p[i] != 0 {
                 egui::Color32::from_rgb(245, 194, 231) // ON  — pink
             } else {
                 egui::Color32::from_rgb(137, 220, 235) // OFF — cyan
