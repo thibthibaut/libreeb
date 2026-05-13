@@ -272,67 +272,90 @@ fn render_canvas(f: &mut Frame, area: Rect, state: &AppState) {
     let x_bound = display_width / 2.0;
     let y_bound = display_height / 2.0;
     
+    // Pre-compute points outside the closure for much faster rendering.
+    // Batching points into two draw calls (one per color) instead of
+    // one draw call per pixel reduces overhead by ~1000x.
+    let mut on_points: Vec<(f64, f64)> = Vec::new();
+    let mut off_points: Vec<(f64, f64)> = Vec::new();
+    let has_image = state.current_image.is_some();
+    
+    if let Some(img) = &state.current_image {
+        for y in 0..(height as usize) {
+            for x in 0..(width as usize) {
+                let pixel = img.get_pixel(x as u32, y as u32);
+                
+                // Skip background: BACKGROUND is [30, 30, 46]
+                if pixel[0] < 50 && pixel[1] < 50 && pixel[2] < 50 {
+                    continue;
+                }
+                
+                // Distinguish ON vs OFF by green channel
+                // POSITIVE has G=194, NEGATIVE has G=220
+                let is_on = pixel[1] < 200;
+                
+                // Apply filter
+                let show = match state.filter {
+                    EventFilter::Both => true,
+                    EventFilter::OnOnly => is_on,
+                    EventFilter::OffOnly => !is_on,
+                };
+                
+                if !show {
+                    continue;
+                }
+                
+                // Scale coordinates to fit display, centered at origin
+                let sx = (x as f64 * scale) - x_bound;
+                let sy = y_bound - (y as f64 * scale);
+                
+                if is_on {
+                    on_points.push((sx, sy));
+                } else {
+                    off_points.push((sx, sy));
+                }
+            }
+        }
+    }
+    
+    let frame_count = state.frame_count;
+    let filter = state.filter;
+    
     let canvas = Canvas::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Event Viewer - Frame #{} ", state.frame_count))
+                .title(format!(" Event Viewer - Frame #{} ", frame_count))
                 .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         )
-        .paint(|ctx| {
-            // Get current frame image
-            let img = match &state.current_image {
-                Some(img) => img,
-                None => return, // No frame yet
-            };
+        .paint(move |ctx| {
+            if !has_image {
+                return;
+            }
             
-            // Draw events as points
-            for y in 0..(height as usize) {
-                for x in 0..(width as usize) {
-                    let pixel = img.get_pixel(x as u32, y as u32);
-                    
-                    // FrameGenerator colors:
-                    // BACKGROUND: [30, 30, 46]
-                    // POSITIVE (p=1): [245, 194, 231] - pinkish
-                    // NEGATIVE (p=0): [137, 220, 235] - cyan
-                    
-                    // Skip background
-                    if pixel[0] < 50 && pixel[1] < 50 && pixel[2] < 50 {
-                        continue;
+            // Draw all ON events in a single batched call
+            match filter {
+                EventFilter::Both | EventFilter::OnOnly => {
+                    if !on_points.is_empty() {
+                        ctx.draw(&Points {
+                            coords: &on_points,
+                            color: Color::LightRed,
+                        });
                     }
-                    
-                    // Distinguish ON vs OFF by green channel
-                    // POSITIVE has G=194, NEGATIVE has G=220
-                    let is_on = pixel[1] < 200; // ON events have lower green
-                    let is_off = pixel[1] > 200; // OFF events have higher green
-                    
-                    let show = match state.filter {
-                        EventFilter::Both => true,
-                        EventFilter::OnOnly => is_on,
-                        EventFilter::OffOnly => is_off,
-                    };
-                    
-                    if !show {
-                        continue;
-                    }
-                    
-                    // Scale coordinates to fit display, centered at origin
-                    let sx = (x as f64 * scale) - x_bound;
-                    let sy = y_bound - (y as f64 * scale);
-                    
-                    // Use very distinct colors
-                    let color = if is_on {
-                        Color::LightRed  // Bright red for ON events
-                    } else {
-                        Color::LightCyan  // Bright cyan for OFF events
-                    };
-                    
-                    // Draw point
-                    ctx.draw(&Points {
-                        coords: &[(sx, sy)],
-                        color,
-                    });
                 }
+                _ => {}
+            }
+            
+            // Draw all OFF events in a single batched call
+            match filter {
+                EventFilter::Both | EventFilter::OffOnly => {
+                    if !off_points.is_empty() {
+                        ctx.draw(&Points {
+                            coords: &off_points,
+                            color: Color::LightCyan,
+                        });
+                    }
+                }
+                _ => {}
             }
         })
         .x_bounds([-x_bound, x_bound])
@@ -479,14 +502,14 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut state: AppState,
 ) -> Result<(), Box<dyn Error>> {
-    let target_fps = 30.0;
-    let frame_duration = Duration::from_secs_f64(1.0 / target_fps);
-    
     loop {
+        // Measure frame start time for real-time playback
+        let frame_start = Instant::now();
+        
         terminal.draw(|f| ui(f, &state))?;
         
-        // Check for key events
-        if event::poll(Duration::from_millis(16))? {
+        // Check for key events (short poll so UI stays responsive)
+        if event::poll(Duration::from_millis(5))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
@@ -513,8 +536,15 @@ fn run_app(
             state.process_next_frame()?;
         }
         
-        // Frame rate limiting
-        std::thread::sleep(frame_duration);
+        // Real-time playback: sleep for the remaining time after decoding.
+        // slice_duration is in microseconds (µs), so convert to Duration.
+        let slice_duration = Duration::from_micros(state.slice_duration);
+        let elapsed = frame_start.elapsed();
+        
+        if elapsed < slice_duration {
+            std::thread::sleep(slice_duration - elapsed);
+        }
+        // If elapsed >= slice_duration, we're behind real-time, so don't sleep.
     }
 }
 

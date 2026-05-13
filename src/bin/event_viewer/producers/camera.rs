@@ -1,15 +1,23 @@
 //! Camera-based event producer using WebUSB.
 
-use super::{calculate_rate, Producer};
+use super::Producer;
 use crate::recording::RecordingState;
 use image::RgbImage;
-use libreeb::{io::header::RawFileHeader, SliceBy};
+use libreeb::{io::header::RawFileHeader, EventBatch, SliceBy};
 use std::sync::{Arc, Mutex};
 
+/// ROI command queued from the UI task to the camera async loop.
+#[derive(Clone, Copy)]
+pub enum RoiCommand {
+    Set(u32, u32, u32, u32), // x_min, y_min, x_max, y_max
+    Clear,
+}
+
 pub struct WasmShared {
-    pub latest_frame: Option<(RgbImage, usize, f64, u64)>,
+    pub latest_result: Option<(EventBatch, RgbImage, usize, f64, u64)>,
     pub pending_slice: Option<SliceBy>,
     pub pending_biases: Option<Vec<(usize, u8, i32)>>,
+    pub pending_roi: Option<RoiCommand>,
     pub stop: bool,
     pub recorder: Option<Arc<Mutex<RecordingState>>>,
 }
@@ -20,8 +28,8 @@ pub struct WasmCameraProducer {
 }
 
 impl Producer for WasmCameraProducer {
-    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64, u64)> {
-        self.shared.lock().ok()?.latest_frame.take()
+    fn poll_frame(&mut self) -> Option<(EventBatch, RgbImage, usize, f64, u64)> {
+        self.shared.lock().ok()?.latest_result.take()
     }
 
     fn set_slice(&mut self, s: SliceBy) {
@@ -33,6 +41,16 @@ impl Producer for WasmCameraProducer {
     fn apply_biases(&mut self, b: Vec<(usize, u8, i32)>) {
         if let Ok(mut g) = self.shared.lock() {
             g.pending_biases = Some(b);
+        }
+    }
+
+    fn set_roi(&mut self, roi: Option<[u32; 4]>) {
+        use super::RoiCommand;
+        if let Ok(mut g) = self.shared.lock() {
+            g.pending_roi = Some(match roi {
+                Some([x_min, y_min, x_max, y_max]) => RoiCommand::Set(x_min, y_min, x_max, y_max),
+                None => RoiCommand::Clear,
+            });
         }
     }
 

@@ -347,7 +347,7 @@ async fn run_seq(device: &UsbDevice, dev_id: u32, seq: &[RegOp]) -> Result<(), J
     Ok(())
 }
 
-async fn find_sensor(device: &UsbDevice) -> Result<(u32, &'static SensorSpec), JsValue> {
+async fn find_sensor(device: &UsbDevice) -> Result<(u32, u32, &'static SensorSpec), JsValue> {
     clog!("[libreeb] find_sensor: querying TZ_PROP_DEVICES");
     let resp = tz_transfer(device, TZ_PROP_DEVICES, &[]).await
         .map_err(|e| {
@@ -378,7 +378,7 @@ async fn find_sensor(device: &UsbDevice) -> Result<(u32, &'static SensorSpec), J
                 if let Some((_, spec)) = SENSOR_TABLE.iter().find(|(id, _)| *id == id_val) {
                     clog!("[libreeb] find_sensor: matched sensor \"{}\" ({}x{})",
                           spec.name, spec.width, spec.height);
-                    return Ok((dev_id, spec));
+                    return Ok((dev_id, id_val, spec));
                 }
                 let known: Vec<String> = SENSOR_TABLE.iter()
                     .map(|(id, s)| format!("{:#010x} ({})", id, s.name))
@@ -404,6 +404,7 @@ pub struct WasmCameraReader {
     device:        UsbDevice,
     dev_id:        u32,
     pub spec:      &'static SensorSpec,
+    pub sensor_id: u32,
     pub bias_defaults: Vec<u8>,
     decoder:       Evt3Decoder,
 }
@@ -429,7 +430,7 @@ impl WasmCameraReader {
         JsFuture::from(device.open()).await?;
         JsFuture::from(device.claim_interface(IFACE)).await?;
 
-        let (dev_id, spec) = find_sensor(&device).await?;
+        let (dev_id, sensor_id, spec) = find_sensor(&device).await?;
 
         // ISSD stop + destroy (pre-init reset, failures expected)
         let _ = run_seq(&device, dev_id, ISSD_STOP).await;
@@ -469,6 +470,7 @@ impl WasmCameraReader {
             device,
             dev_id,
             spec,
+            sensor_id,
             bias_defaults,
             decoder: Evt3Decoder::new(),
         })
@@ -523,6 +525,91 @@ impl WasmCameraReader {
         let new_idac = (factory as i32 + offset).clamp(0, 255) as u32;
         let encoded = 0x11A1_0000u32 | new_idac;
         tz_write_reg(&self.device, self.dev_id, addr, encoded).await
+    }
+
+    // ── ROI (window-based) ────────────────────────────────────────────────────
+
+    /// Enable a hardware ROI window.  Coordinates are clamped to sensor bounds.
+    ///
+    /// Sequence derived from OpenEB gen41_roi_command.cpp write_ROI_windows() + enable():
+    ///
+    ///   roi_win_start_addr (0x0038): bits[10:0]=x_start, bits[25:16]=y_start
+    ///   roi_win_end_addr   (0x003C): bits[10:0]=x_end,   bits[25:16]=y_end
+    ///   roi_win_ctrl       (0x0034): bit0=roi_master_en, bit1=roi_win_done (status)
+    ///   roi_ctrl           (0x0004):
+    ///       bit 1  = roi_td_en
+    ///       bit 5  = roi_td_shadow_trigger  (commits the ROI to the shadow register)
+    ///       bit 6  = td_roi_roni_n_en       (1 = ROI mode, 0 = RONI mode)
+    ///       bit 10 = px_td_rstn             (pixel TD reset — must be set)
+    pub async fn set_roi(
+        &self,
+        x_min: u32,
+        y_min: u32,
+        x_max: u32,
+        y_max: u32,
+    ) -> Result<(), JsValue> {
+        let x_min = x_min.min(self.spec.width  - 1);
+        let y_min = y_min.min(self.spec.height - 1);
+        let x_max = x_max.min(self.spec.width  - 1);
+        let y_max = y_max.min(self.spec.height - 1);
+
+        // 1. Write window coordinates (start inclusive, end inclusive).
+        tz_write_reg(&self.device, self.dev_id, 0x0038, x_min | (y_min << 16)).await?;
+        tz_write_reg(&self.device, self.dev_id, 0x003C, x_max | (y_max << 16)).await?;
+
+        // 2. Trigger the window hardware to latch the coordinates.
+        tz_write_reg_field(&self.device, self.dev_id, 0x0034, 0x1, 0x1).await?;
+
+        // 3. Poll roi_win_done (bit 1 of roi_win_ctrl, 0x0034) until the sensor
+        //    confirms the window has been latched (mirrors OpenEB while loop).
+        for _ in 0..200u32 {
+            let ctrl = tz_read_reg(&self.device, self.dev_id, 0x0034).await?;
+            if ctrl & 0x2 != 0 {
+                break;
+            }
+            // Small async yield so the WASM executor can breathe.
+            gloo_timers_sleep(1).await.ok();
+        }
+
+        // 4. Enable ROI filtering in roi_ctrl.
+        //    Set roi_td_en | roi_td_shadow_trigger | td_roi_roni_n_en | px_td_rstn.
+        //    Use RMW (tz_write_reg_field) to preserve reserved-bit defaults.
+        const ROI_CTRL_MASK: u32 = 0x0000_0462; // bits 1,5,6,10
+        tz_write_reg_field(&self.device, self.dev_id, 0x0004, ROI_CTRL_MASK, ROI_CTRL_MASK).await?;
+
+        // 5. Clear roi_master_en and roi_win_done (OpenEB enable() does this after
+        //    the window has been latched so the master_en pulse is not left high).
+        tz_write_reg_field(&self.device, self.dev_id, 0x0034, 0x0, 0x3).await?;
+
+        clog!(
+            "[libreeb] set_roi: ({},{})–({},{})",
+            x_min, y_min, x_max, y_max
+        );
+        Ok(())
+    }
+
+    /// Disable the hardware ROI window (restores full-sensor output).
+    pub async fn clear_roi(&self) -> Result<(), JsValue> {
+        // Clear all roi_ctrl ROI bits (roi_td_en | roi_td_shadow_trigger |
+        // td_roi_roni_n_en | px_td_rstn) while preserving reserved defaults.
+        const ROI_CTRL_MASK: u32 = 0x0000_0462;
+        tz_write_reg_field(&self.device, self.dev_id, 0x0004, 0x0, ROI_CTRL_MASK).await?;
+
+        // Clear roi_master_en and roi_win_done.
+        tz_write_reg_field(&self.device, self.dev_id, 0x0034, 0x0, 0x3).await?;
+
+        // Restore full-sensor window defaults.
+        tz_write_reg(&self.device, self.dev_id, 0x0038, 0x0000_0000).await?;
+        tz_write_reg(
+            &self.device,
+            self.dev_id,
+            0x003C,
+            (self.spec.width - 1) | ((self.spec.height - 1) << 16),
+        )
+        .await?;
+
+        clog!("[libreeb] clear_roi: ROI disabled");
+        Ok(())
     }
 
     pub async fn stop(&self) {
