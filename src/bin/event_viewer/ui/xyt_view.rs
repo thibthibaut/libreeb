@@ -124,7 +124,7 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
     let axis_labels = [
         ("X", project( 0.5,  0.0, 0.0, sa, ca, se, ce, cx, cy, scale)),
         ("Y", project( 0.0,  0.5, 0.0, sa, ca, se, ce, cx, cy, scale)),
-        ("T", project( 0.0,  0.0, 0.5 * T_STRETCH, sa, ca, se, ce, cx, cy, scale)),
+        ("T", project( 0.0,  0.0, 0.5, sa, ca, se, ce, cx, cy, scale)),
     ];
     for (name, (px, py)) in axis_labels {
         let dir_x = px - cx;
@@ -175,7 +175,7 @@ fn draw_axes(
     let origin = project(0.0, 0.0, 0.0, sa, ca, se, ce, cx, cy, scale);
     let x_end  = project(0.5, 0.0, 0.0, sa, ca, se, ce, cx, cy, scale);
     let y_end  = project(0.0, 0.5, 0.0, sa, ca, se, ce, cx, cy, scale);
-    let t_end  = project(0.0, 0.0, 0.5 * T_STRETCH, sa, ca, se, ce, cx, cy, scale);
+    let t_end  = project(0.0, 0.0, 0.5, sa, ca, se, ce, cx, cy, scale);
 
     let stroke = |c| egui::Stroke::new(1.5_f32, c);
     painter.line_segment(
