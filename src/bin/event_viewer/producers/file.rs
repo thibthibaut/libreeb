@@ -91,16 +91,17 @@ impl WasmFileProducer {
         self.buffered_batch = None;
     }
 
-    fn render_batch(&self, batch: EventBatch) -> (RgbImage, usize, f64, u64) {
+    fn render_batch(&self, batch: EventBatch) -> (EventBatch, RgbImage, usize, f64, u64) {
         let n = batch.len();
         let rate = calculate_rate(&batch);
         let last_ts = batch.t.last().copied().unwrap_or(0);
-        (self.generator.generate(&batch), n, rate, last_ts)
+        let img = self.generator.generate(&batch);
+        (batch, img, n, rate, last_ts)
     }
 }
 
 impl Producer for WasmFileProducer {
-    fn poll_frame(&mut self) -> Option<(RgbImage, usize, f64, u64)> {
+    fn poll_frame(&mut self) -> Option<(EventBatch, RgbImage, usize, f64, u64)> {
         // Check buffered batch first
         if let Some(batch) = self.buffered_batch.take() {
             if self.should_display_batch(&batch) {

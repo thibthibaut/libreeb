@@ -1,7 +1,13 @@
 use crate::{DecodeInto, EventBatch, SliceBy};
 use std::io::Read;
 
-const READ_BUFFER_SIZE: usize = 262144;
+// WASM has a 1 MB default stack; a 256 KB inline buffer overflows it in debug
+// builds (the compiler emits a stack-to-heap memcpy for BufferedDecoder::new).
+// Use a smaller buffer for WASM — 32 KB is plenty for the display frame-rate.
+#[cfg(target_arch = "wasm32")]
+const READ_BUFFER_SIZE: usize = 32_768;
+#[cfg(not(target_arch = "wasm32"))]
+const READ_BUFFER_SIZE: usize = 262_144;
 const _: () = {
     assert!(READ_BUFFER_SIZE.is_multiple_of(8));
 };

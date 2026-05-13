@@ -30,6 +30,7 @@ pub use io::{EventDecoder, RawEventType, RawFileHeader, CameraGeometry};
 
 // Re-export processing
 pub use processing::FrameGenerator;
+pub use processing::TimeSurface;
 
 // Re-export biases for compatibility
 pub mod biases {
@@ -403,9 +404,17 @@ impl RawFileReader {
     }
 
     /// Reset by re-opening the file from disk (native only).
+    /// Preserves the scanned geometry if it was previously determined.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reset(&mut self) {
-        if let Ok(fresh) = Self::new(&self.path) {
+        // Preserve scanned geometry across resets
+        let scanned_geometry = self.header.camera_geometry;
+        
+        if let Ok(mut fresh) = Self::new(&self.path) {
+            // Restore scanned geometry if it was non-zero
+            if scanned_geometry.width > 0 || scanned_geometry.height > 0 {
+                fresh.header.camera_geometry = scanned_geometry;
+            }
             *self = fresh;
         }
     }

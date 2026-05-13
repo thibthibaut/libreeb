@@ -4,9 +4,6 @@
 pub mod bias_controls;
 
 #[cfg(target_arch = "wasm32")]
-pub mod playback_controls;
-
-#[cfg(target_arch = "wasm32")]
 pub mod recording_controls;
 
 #[cfg(target_arch = "wasm32")]
@@ -19,7 +16,13 @@ pub mod canvas;
 pub mod selection;
 
 #[cfg(target_arch = "wasm32")]
-pub use bias_controls::{format_bias_file, parse_bias_file, BiasAction, BiasControlResult};
+pub mod timeline_panel;
+
+#[cfg(target_arch = "wasm32")]
+pub mod xyt_view;
+
+#[cfg(target_arch = "wasm32")]
+pub use bias_controls::{format_bias_file, parse_bias_file, BiasAction};
 
 #[cfg(target_arch = "wasm32")]
 pub use canvas::show_canvas;
@@ -28,7 +31,7 @@ pub use canvas::show_canvas;
 pub use info_panel::show_info_panel;
 
 #[cfg(target_arch = "wasm32")]
-pub use recording_controls::show_recording_controls;
+pub use selection::{show_selection_screen, SelectionAction};
 
 #[cfg(target_arch = "wasm32")]
-pub use selection::{show_selection_screen, SelectionAction};
+pub use timeline_panel::show_timeline_panel;

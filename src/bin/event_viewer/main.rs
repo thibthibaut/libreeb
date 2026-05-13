@@ -32,24 +32,28 @@ use state::{AppState, DisplayMode, FpsTracker, InitSlot, ViewerState};
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Arc, Mutex};
 #[cfg(target_arch = "wasm32")]
-use utils::{RateSample, TimeWindow};
-#[cfg(target_arch = "wasm32")]
 use ui::{
-    format_bias_file, parse_bias_file, show_canvas, show_info_panel,
-    show_selection_screen, show_timeline_panel, BiasAction, SelectionAction,
+    format_bias_file, parse_bias_file, show_canvas, show_info_panel, show_selection_screen,
+    show_timeline_panel, BiasAction, SelectionAction,
 };
+#[cfg(target_arch = "wasm32")]
+use utils::{RateSample, TimeWindow};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
-struct EventViewerApp { state: AppState }
+struct EventViewerApp {
+    state: AppState,
+}
 
 #[cfg(target_arch = "wasm32")]
 impl EventViewerApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        EventViewerApp { state: AppState::Selection }
+        EventViewerApp {
+            state: AppState::Selection,
+        }
     }
 }
 
@@ -66,13 +70,11 @@ impl eframe::App for EventViewerApp {
 impl EventViewerApp {
     fn process(&mut self, ctx: &egui::Context, state: AppState) -> AppState {
         match state {
-            AppState::Selection => {
-                match show_selection_screen(ctx) {
-                    SelectionAction::OpenFile   => start_open_file_wasm(),
-                    SelectionAction::OpenCamera => start_open_camera_wasm(),
-                    SelectionAction::None       => AppState::Selection,
-                }
-            }
+            AppState::Selection => match show_selection_screen(ctx) {
+                SelectionAction::OpenFile => start_open_file_wasm(),
+                SelectionAction::OpenCamera => start_open_camera_wasm(),
+                SelectionAction::None => AppState::Selection,
+            },
 
             AppState::Opening { label, init } => {
                 let mut cancel = false;
@@ -83,14 +85,18 @@ impl EventViewerApp {
                         ui.add_space(8.0);
                         ui.label(&label);
                         ui.add_space(16.0);
-                        if ui.button("Cancel").clicked() { cancel = true; }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
                     });
                 });
-                if cancel { return AppState::Selection; }
+                if cancel {
+                    return AppState::Selection;
+                }
                 match init.lock().ok().and_then(|mut g| g.take()) {
-                    Some(Ok(vs))  => AppState::Viewing(vs),
-                    Some(Err(e))  => AppState::Error(e),
-                    None          => AppState::Opening { label, init },
+                    Some(Ok(vs)) => AppState::Viewing(vs),
+                    Some(Err(e)) => AppState::Error(e),
+                    None => AppState::Opening { label, init },
                 }
             }
 
@@ -111,7 +117,7 @@ impl EventViewerApp {
                         let x0 = v.roi_left;
                         let y0 = v.roi_top;
                         let x1 = (v.roi_left + v.roi_width).saturating_sub(1);
-                        let y1 = (v.roi_top  + v.roi_height).saturating_sub(1);
+                        let y1 = (v.roi_top + v.roi_height).saturating_sub(1);
                         v.producer.set_roi(Some([x0, y0, x1, y1]));
                     } else {
                         v.producer.set_roi(None);
@@ -120,7 +126,10 @@ impl EventViewerApp {
                     if let Some(sid) = v.sensor_id {
                         storage::save_roi(
                             sid,
-                            v.roi_left, v.roi_top, v.roi_width, v.roi_height,
+                            v.roi_left,
+                            v.roi_top,
+                            v.roi_width,
+                            v.roi_height,
                             v.roi_enabled,
                         );
                     }
@@ -147,7 +156,7 @@ impl EventViewerApp {
                 if panel_actions.recording_stop {
                     v.producer.stop_recording();
                     if let Ok(mut rec) = v.recorder.lock() {
-                        let buf  = rec.stop();
+                        let buf = rec.stop();
                         let fname = rec.filename.clone();
                         download_file(&fname, &buf);
                         rec.reset();
@@ -162,21 +171,23 @@ impl EventViewerApp {
                             if let Some(h) = rfd::AsyncFileDialog::new()
                                 .add_filter("Bias files", &["bias"])
                                 .set_file_name("biases.bias")
-                                .save_file().await
+                                .save_file()
+                                .await
                             {
                                 let _ = h.write(content.as_bytes()).await;
                             }
                         });
                     }
                     BiasAction::Load => {
-                        let slot  = Arc::new(Mutex::new(None::<Vec<i32>>));
+                        let slot = Arc::new(Mutex::new(None::<Vec<i32>>));
                         let slot2 = Arc::clone(&slot);
                         spawn_local(async move {
                             if let Some(file) = rfd::AsyncFileDialog::new()
                                 .add_filter("Bias files", &["bias"])
-                                .pick_file().await
+                                .pick_file()
+                                .await
                             {
-                                let bytes   = file.read().await;
+                                let bytes = file.read().await;
                                 let content = String::from_utf8_lossy(&bytes);
                                 if let Ok(offsets) = parse_bias_file(&content) {
                                     *slot2.lock().unwrap() = Some(offsets);
@@ -187,7 +198,9 @@ impl EventViewerApp {
                     }
                     BiasAction::Reset => {
                         for (i, bi) in BIAS_TABLE.iter().enumerate() {
-                            if let Some(o) = v.bias_offsets.get_mut(i) { *o = bi.default_offset; }
+                            if let Some(o) = v.bias_offsets.get_mut(i) {
+                                *o = bi.default_offset;
+                            }
                         }
                     }
                     BiasAction::None => {}
@@ -196,19 +209,29 @@ impl EventViewerApp {
                 // Pending async bias load
                 let mut loaded = None;
                 if let Some(ref slot) = v.pending_bias_load {
-                    if let Ok(mut g) = slot.try_lock() { loaded = g.take(); }
+                    if let Ok(mut g) = slot.try_lock() {
+                        loaded = g.take();
+                    }
                 }
                 if let Some(offsets) = loaded {
                     v.bias_offsets = offsets;
-                    let biases = v.bias_defaults.iter().enumerate()
-                        .map(|(i, &f)| (i, f, v.bias_offsets[i])).collect();
+                    let biases = v
+                        .bias_defaults
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &f)| (i, f, v.bias_offsets[i]))
+                        .collect();
                     v.producer.apply_biases(biases);
                     v.pending_bias_load = None;
                 }
 
                 if panel_actions.bias_changed {
-                    let biases = v.bias_defaults.iter().enumerate()
-                        .map(|(i, &f)| (i, f, v.bias_offsets[i])).collect();
+                    let biases = v
+                        .bias_defaults
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &f)| (i, f, v.bias_offsets[i]))
+                        .collect();
                     v.producer.apply_biases(biases);
                     if let Some(sid) = v.sensor_id {
                         storage::save_biases(sid, &v.bias_offsets);
@@ -223,14 +246,24 @@ impl EventViewerApp {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add_space(60.0);
-                        ui.label(egui::RichText::new("Error").color(egui::Color32::RED).heading());
+                        ui.label(
+                            egui::RichText::new("Error")
+                                .color(egui::Color32::RED)
+                                .heading(),
+                        );
                         ui.add_space(8.0);
                         ui.label(&msg);
                         ui.add_space(16.0);
-                        if ui.button("Back").clicked() { back = true; }
+                        if ui.button("Back").clicked() {
+                            back = true;
+                        }
                     });
                 });
-                if back { AppState::Selection } else { AppState::Error(msg) }
+                if back {
+                    AppState::Selection
+                } else {
+                    AppState::Error(msg)
+                }
             }
         }
     }
@@ -248,18 +281,26 @@ fn upload_frame(
     timestamp: u64,
 ) {
     // ── Normal frame texture ──────────────────────────────────────────────────
-    let pixels: Vec<egui::Color32> = img.pixels()
+    let pixels: Vec<egui::Color32> = img
+        .pixels()
         .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
         .collect();
-    let ci = egui::ColorImage { size: [v.width as usize, v.height as usize], pixels };
+    let ci = egui::ColorImage {
+        size: [v.width as usize, v.height as usize],
+        pixels,
+    };
     match &mut v.frame_texture {
         Some(t) => t.set(ci, egui::TextureOptions::NEAREST),
-        None    => { v.frame_texture = Some(ctx.load_texture("frame", ci, egui::TextureOptions::NEAREST)); }
+        None => {
+            v.frame_texture = Some(ctx.load_texture("frame", ci, egui::TextureOptions::NEAREST));
+        }
     }
 
     // ── Stats ─────────────────────────────────────────────────────────────────
     v.frame_count += 1;
-    if v.first_timestamp.is_none() { v.first_timestamp = Some(timestamp); }
+    if v.first_timestamp.is_none() {
+        v.first_timestamp = Some(timestamp);
+    }
     v.last_timestamp = Some(timestamp);
 
     v.fps_tracker.record();
@@ -274,16 +315,19 @@ fn upload_frame(
     // Render to texture only when that mode is active (avoids 921K-pixel / 60fps cost).
     if v.display_mode == DisplayMode::TimeSurface {
         let img = v.time_surface.render(timestamp, v.ts_decay_us);
-        let pixels: Vec<egui::Color32> = img.pixels()
+        let pixels: Vec<egui::Color32> = img
+            .pixels()
             .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
             .collect();
-        let ci = egui::ColorImage { size: [v.width as usize, v.height as usize], pixels };
+        let ci = egui::ColorImage {
+            size: [v.width as usize, v.height as usize],
+            pixels,
+        };
         match &mut v.ts_texture {
             Some(t) => t.set(ci, egui::TextureOptions::NEAREST),
-            None    => {
-                v.ts_texture = Some(
-                    ctx.load_texture("time_surface", ci, egui::TextureOptions::NEAREST)
-                );
+            None => {
+                v.ts_texture =
+                    Some(ctx.load_texture("time_surface", ci, egui::TextureOptions::NEAREST));
             }
         }
     }
@@ -301,20 +345,28 @@ fn download_file(filename: &str, data: &[u8]) {
     use wasm_bindgen::JsCast;
     use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 
-    let window   = match web_sys::window()   { Some(w) => w, None => return };
-    let document = match window.document()   { Some(d) => d, None => return };
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+    let document = match window.document() {
+        Some(d) => d,
+        None => return,
+    };
 
-    let array      = js_sys::Uint8Array::from(data);
+    let array = js_sys::Uint8Array::from(data);
     let blob_parts = js_sys::Array::new();
     blob_parts.push(&array);
     let props = BlobPropertyBag::new();
     props.set_type("application/octet-stream");
 
     let blob = match Blob::new_with_u8_array_sequence_and_options(&blob_parts, &props) {
-        Ok(b) => b, Err(_) => return,
+        Ok(b) => b,
+        Err(_) => return,
     };
     let url = match Url::create_object_url_with_blob(&blob) {
-        Ok(u) => u, Err(_) => return,
+        Ok(u) => u,
+        Err(_) => return,
     };
     if let Ok(a) = document.create_element("a") {
         if let Ok(anchor) = a.dyn_into::<HtmlAnchorElement>() {
@@ -335,14 +387,18 @@ fn start_open_file_wasm() -> AppState {
     spawn_local(async move {
         *init2.lock().unwrap() = Some(open_file_wasm_async().await);
     });
-    AppState::Opening { label: "Picking file…".into(), init }
+    AppState::Opening {
+        label: "Picking file…".into(),
+        init,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn open_file_wasm_async() -> Result<ViewerState, String> {
     let file = rfd::AsyncFileDialog::new()
         .add_filter("RAW event files", &["raw"])
-        .pick_file().await
+        .pick_file()
+        .await
         .ok_or("No file selected")?;
 
     let label = file.file_name();
@@ -350,21 +406,38 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
 
     let mut probe = RawFileReader::from_reader(std::io::Cursor::new(Arc::clone(&bytes)))
         .map_err(|e| e.to_string())?;
-    if probe.needs_geometry_scan() { probe.scan_geometry(8); }
+    if probe.needs_geometry_scan() {
+        probe.scan_geometry(8);
+    }
     let geometry = CameraGeometry {
-        width:  probe.header.camera_geometry.width.max(1),
+        width: probe.header.camera_geometry.width.max(1),
         height: probe.header.camera_geometry.height.max(1),
     };
     let header = probe.header;
-    let mut header_info: Vec<(String, String)> = header.header_dict.iter()
-        .map(|(k, val)| (k.clone(), val.trim().to_string())).collect();
+    let mut header_info: Vec<(String, String)> = header
+        .header_dict
+        .iter()
+        .map(|(k, val)| (k.clone(), val.trim().to_string()))
+        .collect();
     header_info.sort_by(|a, b| a.0.cmp(&b.0));
 
     let producer = Box::new(WasmFileProducer::new(
-        Arc::clone(&bytes), geometry, SliceBy::Time(33_333), header,
+        Arc::clone(&bytes),
+        geometry,
+        SliceBy::Time(33_333),
+        header,
     ));
 
-    Ok(new_viewer_state(geometry, label, header_info, false, None, vec![], vec![], producer))
+    Ok(new_viewer_state(
+        geometry,
+        label,
+        header_info,
+        false,
+        None,
+        vec![],
+        vec![],
+        producer,
+    ))
 }
 
 // ── Camera opening ────────────────────────────────────────────────────────────
@@ -376,7 +449,10 @@ fn start_open_camera_wasm() -> AppState {
     spawn_local(async move {
         *init2.lock().unwrap() = Some(open_camera_wasm_async().await);
     });
-    AppState::Opening { label: "Connecting EVK4… (~3 s)".into(), init }
+    AppState::Opening {
+        label: "Connecting EVK4… (~3 s)".into(),
+        init,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -384,9 +460,14 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     use libreeb::io::camera_web::WasmCameraReader;
     use producers::camera::{RoiCommand, WasmShared};
 
-    let camera    = WasmCameraReader::open().await.map_err(|e| format!("{e:?}"))?;
-    let geometry  = CameraGeometry { width: camera.width(), height: camera.height() };
-    let label     = format!("EVK4 — {}", camera.sensor_name());
+    let camera = WasmCameraReader::open()
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let geometry = CameraGeometry {
+        width: camera.width(),
+        height: camera.height(),
+    };
+    let label = format!("EVK4 — {}", camera.sensor_name());
     let sensor_id = camera.sensor_id;
     let bias_defaults = camera.bias_defaults.clone();
 
@@ -394,63 +475,88 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     let bias_offsets: Vec<i32> = storage::load_biases(sensor_id, BIAS_TABLE.len())
         .unwrap_or_else(|| BIAS_TABLE.iter().map(|bi| bi.default_offset).collect());
 
-    let initial_biases: Vec<(usize, u8, i32)> = bias_defaults.iter().enumerate()
+    let initial_biases: Vec<(usize, u8, i32)> = bias_defaults
+        .iter()
+        .enumerate()
         .map(|(i, &f)| (i, f, bias_offsets[i]))
         .collect();
 
     // Restore ROI from localStorage.
     let (roi_left, roi_top, roi_width, roi_height, roi_enabled) =
-        storage::load_roi(sensor_id)
-            .unwrap_or((0, 0, geometry.width, geometry.height, false));
+        storage::load_roi(sensor_id).unwrap_or((0, 0, geometry.width, geometry.height, false));
 
     // Build the pending ROI command to apply after the camera loop starts.
     let pending_roi = if roi_enabled {
         let x0 = roi_left;
         let y0 = roi_top;
         let x1 = (roi_left + roi_width).saturating_sub(1);
-        let y1 = (roi_top  + roi_height).saturating_sub(1);
+        let y1 = (roi_top + roi_height).saturating_sub(1);
         Some(RoiCommand::Set(x0, y0, x1, y1))
     } else {
         None
     };
 
     let shared = Arc::new(Mutex::new(WasmShared {
-        latest_result:  None,
-        pending_slice:  None,
-        pending_biases: if initial_biases.is_empty() { None } else { Some(initial_biases) },
+        latest_result: None,
+        pending_slice: None,
+        pending_biases: if initial_biases.is_empty() {
+            None
+        } else {
+            Some(initial_biases)
+        },
         pending_roi,
-        stop:           false,
-        recorder:       None,
+        stop: false,
+        recorder: None,
     }));
     let shared_task = Arc::clone(&shared);
-    let generator   = FrameGenerator::new(geometry);
+    let generator = FrameGenerator::new(geometry);
 
     let header = RawFileHeader {
-        header_dict:     std::collections::HashMap::new(),
-        event_type:      libreeb::io::header::RawEventType::Evt3,
+        header_dict: std::collections::HashMap::new(),
+        event_type: libreeb::io::header::RawEventType::Evt3,
         camera_geometry: geometry,
     };
     let mut slice = SliceBy::Time(33_333);
 
     spawn_local(async move {
         let mut camera = camera;
-        let mut acc    = libreeb::EventBatch::new();
+        let mut acc = libreeb::EventBatch::new();
         loop {
             let (stop, new_slice, biases, roi_cmd) = {
-                let mut s = match shared_task.lock() { Ok(g) => g, Err(_) => break };
-                (s.stop, s.pending_slice.take(), s.pending_biases.take(), s.pending_roi.take())
+                let mut s = match shared_task.lock() {
+                    Ok(g) => g,
+                    Err(_) => break,
+                };
+                (
+                    s.stop,
+                    s.pending_slice.take(),
+                    s.pending_biases.take(),
+                    s.pending_roi.take(),
+                )
             };
-            if stop { camera.stop().await; break; }
-            if let Some(sl) = new_slice { slice = sl; acc = libreeb::EventBatch::new(); }
+            if stop {
+                camera.stop().await;
+                break;
+            }
+            if let Some(sl) = new_slice {
+                slice = sl;
+                acc = libreeb::EventBatch::new();
+            }
             if let Some(bs) = biases {
                 for (idx, factory, offset) in bs {
-                    let _ = camera.write_bias(BIAS_TABLE[idx].addr, factory, offset).await;
+                    let _ = camera
+                        .write_bias(BIAS_TABLE[idx].addr, factory, offset)
+                        .await;
                 }
             }
             if let Some(cmd) = roi_cmd {
                 match cmd {
-                    RoiCommand::Set(x0, y0, x1, y1) => { let _ = camera.set_roi(x0, y0, x1, y1).await; }
-                    RoiCommand::Clear                => { let _ = camera.clear_roi().await; }
+                    RoiCommand::Set(x0, y0, x1, y1) => {
+                        let _ = camera.set_roi(x0, y0, x1, y1).await;
+                    }
+                    RoiCommand::Clear => {
+                        let _ = camera.clear_roi().await;
+                    }
                 }
             }
 
@@ -458,30 +564,40 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
                 acc.append(&mut batch);
                 if let Ok(s) = shared_task.lock() {
                     if let Some(ref rec) = s.recorder {
-                        if let Ok(mut r) = rec.lock() { r.buffer.extend_from_slice(&raw); }
+                        if let Ok(mut r) = rec.lock() {
+                            r.buffer.extend_from_slice(&raw);
+                        }
                     }
                 }
             } else {
                 // Yield to the browser event loop on empty reads to avoid starving egui.
-                wasm_bindgen_futures::JsFuture::from(
-                    js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)
-                ).await.ok();
+                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+                    &wasm_bindgen::JsValue::UNDEFINED,
+                ))
+                .await
+                .ok();
             }
 
             let emit = match slice {
-                SliceBy::Time(us) =>
-                    acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= us,
+                SliceBy::Time(us) => {
+                    acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= us
+                }
                 SliceBy::Count(n) => acc.len() >= n,
-                SliceBy::Both(us, n) =>
+                SliceBy::Both(us, n) => {
                     (acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= us)
-                    || acc.len() >= n,
+                        || acc.len() >= n
+                }
                 SliceBy::Bytes => false,
             };
             if emit && !acc.is_empty() {
-                let ev    = acc.len();
-                let dt    = acc.t.last().unwrap().saturating_sub(acc.t[0]);
-                let rate  = if dt > 0 { ev as f64 / (dt as f64 * 1e-6) } else { 0.0 };
-                let ts    = acc.t.last().copied().unwrap_or(0);
+                let ev = acc.len();
+                let dt = acc.t.last().unwrap().saturating_sub(acc.t[0]);
+                let rate = if dt > 0 {
+                    ev as f64 / (dt as f64 * 1e-6)
+                } else {
+                    0.0
+                };
+                let ts = acc.t.last().copied().unwrap_or(0);
                 let frame = generator.generate(&acc);
                 let batch = std::mem::replace(&mut acc, libreeb::EventBatch::new());
                 if let Ok(mut s) = shared_task.lock() {
@@ -492,14 +608,20 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     });
 
     let mut vs = new_viewer_state(
-        geometry, label, vec![], true, Some(sensor_id), bias_defaults, bias_offsets,
+        geometry,
+        label,
+        vec![],
+        true,
+        Some(sensor_id),
+        bias_defaults,
+        bias_offsets,
         Box::new(WasmCameraProducer { shared, header }),
     );
     // Restore persisted ROI into ViewerState.
-    vs.roi_left    = roi_left;
-    vs.roi_top     = roi_top;
-    vs.roi_width   = roi_width;
-    vs.roi_height  = roi_height;
+    vs.roi_left = roi_left;
+    vs.roi_top = roi_top;
+    vs.roi_width = roi_width;
+    vs.roi_height = roi_height;
     vs.roi_enabled = roi_enabled;
     Ok(vs)
 }
@@ -508,18 +630,18 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
 
 #[cfg(target_arch = "wasm32")]
 fn new_viewer_state(
-    geometry:      CameraGeometry,
-    label:         String,
-    header_info:   Vec<(String, String)>,
-    is_camera:     bool,
-    sensor_id:     Option<u32>,
+    geometry: CameraGeometry,
+    label: String,
+    header_info: Vec<(String, String)>,
+    is_camera: bool,
+    sensor_id: Option<u32>,
     bias_defaults: Vec<u8>,
-    bias_offsets:  Vec<i32>,
-    producer:      Box<dyn producers::Producer>,
+    bias_offsets: Vec<i32>,
+    producer: Box<dyn producers::Producer>,
 ) -> ViewerState {
     ViewerState {
-        width:        geometry.width,
-        height:       geometry.height,
+        width: geometry.width,
+        height: geometry.height,
         label,
         header_info,
         is_camera,
@@ -527,36 +649,36 @@ fn new_viewer_state(
         producer,
 
         first_timestamp: None,
-        last_timestamp:  None,
-        frame_count:     0,
-        fps_tracker:     FpsTracker::new(),
-        render_fps:      0.0,
+        last_timestamp: None,
+        frame_count: 0,
+        fps_tracker: FpsTracker::new(),
+        render_fps: 0.0,
 
-        window_us:      33_333.0,
+        window_us: 33_333.0,
         playback_speed: 1.0,
-        playback_fps:   0.0,
+        playback_fps: 0.0,
 
-        display_mode:  DisplayMode::Normal,
+        display_mode: DisplayMode::Normal,
         frame_texture: None,
 
-        time_surface:  TimeSurface::new(geometry.width, geometry.height),
-        ts_texture:    None,
-        ts_decay_us:   30_000,
+        time_surface: TimeSurface::new(geometry.width, geometry.height),
+        ts_texture: None,
+        ts_decay_us: 30_000,
 
-        xyt_buffer:     TimeWindow::new(2_000_000, 60),
-        xyt_azimuth:    45.0,
-        xyt_elevation:  30.0,
+        xyt_buffer: TimeWindow::new(2_000_000, 20),
+        xyt_azimuth: 45.0,
+        xyt_elevation: 30.0,
         xyt_point_size: 1.5,
-        xyt_zoom:       1.0,
+        xyt_zoom: 1.0,
 
-        rate_history:    TimeWindow::new(300_000_000, 18_000),
+        rate_history: TimeWindow::new(300_000_000, 18_000),
         rate_lookback_s: 10.0,
 
         roi_enabled: false,
-        roi_left:    0,
-        roi_top:     0,
-        roi_width:   geometry.width,
-        roi_height:  geometry.height,
+        roi_left: 0,
+        roi_top: 0,
+        roi_width: geometry.width,
+        roi_height: geometry.height,
 
         bias_defaults,
         bias_offsets,
@@ -584,7 +706,11 @@ fn main() {
             .expect("no <canvas id='the_canvas_id'>");
         let opts = eframe::WebOptions::default();
         eframe::WebRunner::new()
-            .start(canvas, opts, Box::new(|cc| Ok(Box::new(EventViewerApp::new(cc)))))
+            .start(
+                canvas,
+                opts,
+                Box::new(|cc| Ok(Box::new(EventViewerApp::new(cc)))),
+            )
             .await
             .expect("eframe start failed");
     });
