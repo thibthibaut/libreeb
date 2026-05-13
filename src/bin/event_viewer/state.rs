@@ -1,166 +1,155 @@
-//! Application state types.
+//! Application-level state.
+//!
+//! Keeps the flat `ViewerState` as simple as possible — one struct with
+//! plain fields, no nested sub-states.  Enums are kept to a minimum.
 
 use crate::producers::Producer;
 use crate::recording::RecordingState;
+use crate::utils::{RateSample, TimeWindow};
 use eframe::egui;
-use std::collections::VecDeque;
+use libreeb::{processing::TimeSurface, EventBatch};
 use std::sync::{Arc, Mutex};
 use web_time::Instant;
 
-/// Main application state machine.
-pub enum WasmState {
+// ── Display mode ──────────────────────────────────────────────────────────────
+
+/// Which visualisation occupies the central canvas.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    /// Colour-coded event-density frame (default).
+    Normal, // TODO: Rename to RGB frame
+    /// Per-pixel time-surface with jet colourmap + exponential decay.
+    TimeSurface,
+    /// Interactive 3-D XYT point cloud (drag to rotate, scroll to zoom).
+    Xyt3D,
+}
+
+// ── Top-level WASM state machine ──────────────────────────────────────────────
+
+pub enum AppState {
+    /// Waiting for user to pick a source.
     Selection,
-    Opening {
-        label: String,
-        init: InitSlot,
-    },
+    /// Async init in progress (file parsing or USB camera open).
+    Opening { label: String, init: InitSlot },
+    /// Source open and streaming.
     Viewing(ViewerState),
+    /// Unrecoverable error; shows message + Back button.
     Error(String),
 }
 
-/// Async init result slot.
 pub type InitSlot = Arc<Mutex<Option<Result<ViewerState, String>>>>;
 
-/// Active viewer state when playing back events.
+// ── ViewerState ───────────────────────────────────────────────────────────────
+
 pub struct ViewerState {
+    // ── Source metadata ───────────────────────────────────────────────────────
     pub width: u32,
     pub height: u32,
     pub label: String,
-    pub header_info: Vec<(String, String)>,
-    pub producer: Box<dyn Producer>,
-    pub texture: Option<egui::TextureHandle>,
-    pub frame_count: u64,
-    pub window_us: f32,
-    pub last_ev_count: usize,
-    pub last_rate: f64,
-
-    // Camera-mode bias controls (empty for file mode)
+    pub header_info: Vec<(String, String)>, // TODO: couldn't we use a struct from the header.rs here ? and maybe a to_vec_of_string method ? I think the logic of converting the Header Strcut to a Vec of string (or hashmap) should belong to the header
     pub is_camera: bool,
-    pub bias_defaults: Vec<u8>,
-    pub bias_offsets: Vec<i32>,
+    /// Hardware sensor ID used as localStorage key (camera mode only).
+    pub sensor_id: Option<u32>,
 
-    // Playback state
-    pub playback_state: PlaybackState,
+    // ── Data source ───────────────────────────────────────────────────────────
+    pub producer: Box<dyn Producer>,
+
+    // ── Timing / stats ────────────────────────────────────────────────────────
+    pub first_timestamp: Option<u64>, // TODO: document what is this
+    pub last_timestamp: Option<u64>,  // TODO: document what is this
+    pub frame_count: u64,
     pub fps_tracker: FpsTracker,
-    
-    // Timestamp tracking
-    pub first_timestamp: Option<u64>,  // First event timestamp (µs)
-    pub last_timestamp: Option<u64>,   // Latest event timestamp (µs)
+    pub render_fps: f32, // UI render FPS
 
-    // Recording state
-    pub recorder: Arc<Mutex<RecordingState>>,
+    // ── Playback (file mode) ──────────────────────────────────────────────────
+    pub window_us: f32,
+    pub playback_speed: f32,
+    pub playback_fps: f32,
 
-    // Async operations
+    // ── Canvas display ────────────────────────────────────────────────────────
+    pub display_mode: DisplayMode,
+
+    // Normal frame texture (always updated from every event batch).
+    pub frame_texture: Option<egui::TextureHandle>,
+
+    // Time surface: accumulator + rendered texture.
+    // `ts_texture` is updated inside `upload_frame` only when mode == TimeSurface,
+    // avoiding the 921K-pixel / 60fps cost of re-rendering every egui repaint.
+    pub time_surface: TimeSurface,
+    pub ts_texture: Option<egui::TextureHandle>,
+    pub ts_decay_us: u64,
+
+    // ── XYT 3-D point cloud ───────────────────────────────────────────────────
+    /// Sliding window of event batches — sensor-time eviction (2 s) + count cap
+    /// (60 slices).  The renderer iterates all batches and all events within
+    /// each batch; no subsampling step is needed.
+    pub xyt_buffer: TimeWindow<EventBatch>,
+    pub xyt_azimuth: f32,
+    pub xyt_elevation: f32,
+    pub xyt_point_size: f32,
+    pub xyt_zoom: f32,
+
+    // ── Event-rate history (bottom panel) ─────────────────────────────────────
+    /// Sliding window of rate samples — 5-min sensor-time retention.
+    /// `rate_lookback_s` (below) controls the visible display window only;
+    /// it never truncates stored samples.
+    pub rate_history: TimeWindow<RateSample>,
+    /// Display-only lookback for the event-rate plot (seconds).
+    pub rate_lookback_s: f64,
+
+    // ── Hardware ROI (camera only) ────────────────────────────────────────────
+    pub roi_enabled: bool, // TODO: Encapsulate this state in a struct! Why not a sensor_roi.rs next to baises.s ?
+    pub roi_left: u32,
+    pub roi_top: u32,
+    pub roi_width: u32,
+    pub roi_height: u32,
+
+    // ── Biases (camera only) ──────────────────────────────────────────────────
+    pub bias_defaults: Vec<u8>, // TODO: Why is this not handled in biases.rs ? by the bias struct ?
+    pub bias_offsets: Vec<i32>,
+    /// Slot for async bias-file load (rfd picks file on a background task).
     pub pending_bias_load: Option<Arc<Mutex<Option<Vec<i32>>>>>,
+
+    // ── Recording ─────────────────────────────────────────────────────────────
+    pub recorder: Arc<Mutex<RecordingState>>,
 }
 
-/// Event rate history for plotting.
-pub struct EventRateHistory {
-    pub samples: VecDeque<(f64, f64)>, // (time_seconds, event_rate)
-    pub lookback_window: f64,          // Seconds of history to keep
-}
+// ── FPS tracker ───────────────────────────────────────────────────────────────
 
-impl EventRateHistory {
-    pub fn new(lookback_window: f64) -> Self {
-        EventRateHistory {
-            samples: VecDeque::with_capacity(200),
-            lookback_window,
-        }
-    }
-
-    pub fn add_sample(&mut self, time: f64, rate: f64) {
-        self.samples.push_back((time, rate));
-        
-        // Remove samples older than lookback window
-        let cutoff = time - self.lookback_window;
-        while let Some(&(t, _)) = self.samples.front() {
-            if t < cutoff {
-                self.samples.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-
-    pub fn set_lookback_window(&mut self, window: f64) {
-        self.lookback_window = window;
-        
-        // Clean up old samples
-        if let Some(&(last_time, _)) = self.samples.back() {
-            let cutoff = last_time - self.lookback_window;
-            while let Some(&(t, _)) = self.samples.front() {
-                if t < cutoff {
-                    self.samples.pop_front();
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// Playback speed and FPS tracking.
-pub struct PlaybackState {
-    pub speed_multiplier: f32,
-    pub target_fps: f32,
-    pub actual_fps: f32,
-}
-
-impl PlaybackState {
-    pub fn new_file() -> Self {
-        PlaybackState {
-            speed_multiplier: 1.0,
-            target_fps: 30.0,
-            actual_fps: 0.0,
-        }
-    }
-
-    pub fn new_camera() -> Self {
-        PlaybackState {
-            speed_multiplier: 1.0,
-            target_fps: 30.0,
-            actual_fps: 0.0,
-        }
-    }
-}
-
-/// FPS measurement over a rolling window.
 pub struct FpsTracker {
-    frame_times: VecDeque<Instant>,
+    times: std::collections::VecDeque<Instant>,
     max_samples: usize,
 }
 
 impl FpsTracker {
     pub fn new() -> Self {
         FpsTracker {
-            frame_times: VecDeque::with_capacity(60),
+            times: std::collections::VecDeque::with_capacity(60),
             max_samples: 60,
         }
     }
 
-    pub fn record_frame(&mut self) {
-        let now = Instant::now();
-        self.frame_times.push_back(now);
-        while self.frame_times.len() > self.max_samples {
-            self.frame_times.pop_front();
+    pub fn record(&mut self) {
+        self.times.push_back(Instant::now());
+        while self.times.len() > self.max_samples {
+            self.times.pop_front();
         }
     }
 
-    pub fn current_fps(&self) -> f32 {
-        if self.frame_times.len() < 2 {
+    pub fn fps(&self) -> f32 {
+        if self.times.len() < 2 {
             return 0.0;
         }
-
         let elapsed = self
-            .frame_times
+            .times
             .back()
             .unwrap()
-            .duration_since(*self.frame_times.front().unwrap());
-
-        if elapsed.as_secs_f32() == 0.0 {
-            return 0.0;
+            .duration_since(*self.times.front().unwrap())
+            .as_secs_f32();
+        if elapsed == 0.0 {
+            0.0
+        } else {
+            (self.times.len() - 1) as f32 / elapsed
         }
-
-        (self.frame_times.len() - 1) as f32 / elapsed.as_secs_f32()
     }
 }
