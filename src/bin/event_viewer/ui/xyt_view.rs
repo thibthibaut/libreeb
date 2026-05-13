@@ -16,6 +16,11 @@
 use crate::state::ViewerState;
 use eframe::egui;
 
+/// How much further the T axis extends relative to X and Y (both ±0.5).
+/// Values > 1 spread events apart in time, making temporal structure more
+/// visible.  X and Y are unaffected.
+const T_STRETCH: f32 = 2.0;
+
 /// Render the 3-D XYT point cloud into the full available area of `ui`.
 /// Called from `canvas.rs` when `DisplayMode::Xyt3D` is active.
 pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
@@ -82,7 +87,7 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
             // Y is flipped: sensor row 0 (top) → +0.5 in 3-D (up).
             let nx =  (batch.x[i] as f32 * inv_w) - 0.5;
             let ny =  0.5 - (batch.y[i] as f32 * inv_h);
-            let nt =  ((batch.t[i] - oldest_t) as f32 / t_range) - 0.5;
+            let nt =  (((batch.t[i] - oldest_t) as f32 / t_range) - 0.5) * T_STRETCH;
 
             // Rotate: azimuth around Y, then elevation around X.
             let rx =  nx * ca + nt * sa;
@@ -119,7 +124,7 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
     let axis_labels = [
         ("X", project( 0.5,  0.0, 0.0, sa, ca, se, ce, cx, cy, scale)),
         ("Y", project( 0.0,  0.5, 0.0, sa, ca, se, ce, cx, cy, scale)),
-        ("T", project( 0.0,  0.0, 0.5, sa, ca, se, ce, cx, cy, scale)),
+        ("T", project( 0.0,  0.0, 0.5 * T_STRETCH, sa, ca, se, ce, cx, cy, scale)),
     ];
     for (name, (px, py)) in axis_labels {
         let dir_x = px - cx;
@@ -170,7 +175,7 @@ fn draw_axes(
     let origin = project(0.0, 0.0, 0.0, sa, ca, se, ce, cx, cy, scale);
     let x_end  = project(0.5, 0.0, 0.0, sa, ca, se, ce, cx, cy, scale);
     let y_end  = project(0.0, 0.5, 0.0, sa, ca, se, ce, cx, cy, scale);
-    let t_end  = project(0.0, 0.0, 0.5, sa, ca, se, ce, cx, cy, scale);
+    let t_end  = project(0.0, 0.0, 0.5 * T_STRETCH, sa, ca, se, ce, cx, cy, scale);
 
     let stroke = |c| egui::Stroke::new(1.5_f32, c);
     painter.line_segment(
