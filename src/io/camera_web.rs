@@ -6,7 +6,7 @@
 //!
 //! The entry point is [`WasmCameraReader::open`], which shows the browser's
 //! USB device-picker dialog, runs the full ISSD init sequence, and then
-//! provides [`WasmCameraReader::read_batch`] for streaming EVT3 event batches.
+//! provides [`WasmCameraReader::read_batch`] for streaming decoded event batches.
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -22,7 +22,12 @@ macro_rules! clog {
     };
 }
 
-use crate::{biases::BIAS_TABLE, decoders::{Evt3, Evt3Decoder}, EventBatch};
+use crate::{
+    biases::BIAS_TABLE,
+    decoders::{Evt21, Evt21Decoder, Evt3, Evt3Decoder},
+    io::header::RawEventType,
+    EventBatch,
+};
 
 // ── EVK4 USB constants ────────────────────────────────────────────────────────
 
@@ -223,6 +228,12 @@ static SENSOR_EVT3_FORMAT: &[RegOp] = &[
     WriteField(0x0000_8000, 0x0000_0080, 0x0000_00C0),
 ];
 
+static SENSOR_EVT21_FORMAT: &[RegOp] = &[
+    // OpenEB TzImx646::set_output_format("EVT21").
+    WriteField(0x0000_7000, 0x0000_0002, 0x0000_0002),
+    WriteField(0x0000_8000, 0x0000_0000, 0x0000_00C0),
+];
+
 // ── Endpoint addresses (WebUSB uses plain endpoint number, no direction bit) ──
 //
 // USB descriptor addresses:  ctrl_out=0x02, ctrl_in=0x82, data_in=0x81
@@ -406,13 +417,59 @@ pub struct WasmCameraReader {
     pub spec:      &'static SensorSpec,
     pub sensor_id: u32,
     pub bias_defaults: Vec<u8>,
-    decoder:       Evt3Decoder,
+    pub event_type: RawEventType,
+    decoder:       CameraDecoder,
+}
+
+enum CameraDecoder {
+    Evt21(Evt21Decoder),
+    Evt3(Evt3Decoder),
+}
+
+impl CameraDecoder {
+    fn new(event_type: RawEventType) -> Result<Self, JsValue> {
+        match event_type {
+            RawEventType::Evt21 => Ok(Self::Evt21(Evt21Decoder::new())),
+            RawEventType::Evt3  => Ok(Self::Evt3(Evt3Decoder::new())),
+            _ => Err(JsValue::from_str("live camera supports only EVT21 or EVT3")),
+        }
+    }
+
+    fn word_size(&self) -> usize {
+        match self {
+            Self::Evt21(_) => std::mem::size_of::<Evt21>(),
+            Self::Evt3(_)  => std::mem::size_of::<Evt3>(),
+        }
+    }
+
+    fn decode(&mut self, bytes: &[u8]) -> EventBatch {
+        let mut batch = EventBatch::new();
+        match self {
+            Self::Evt21(decoder) => {
+                let evts: &[Evt21] = bytemuck::cast_slice(bytes);
+                decoder.decode(evts, &mut batch, u64::MAX, usize::MAX);
+            }
+            Self::Evt3(decoder) => {
+                let evts: &[Evt3] = bytemuck::cast_slice(bytes);
+                decoder.decode(evts, &mut batch, u64::MAX, usize::MAX);
+            }
+        }
+        batch
+    }
+}
+
+fn sensor_format_sequence(event_type: RawEventType) -> Result<&'static [RegOp], JsValue> {
+    match event_type {
+        RawEventType::Evt21 => Ok(SENSOR_EVT21_FORMAT),
+        RawEventType::Evt3  => Ok(SENSOR_EVT3_FORMAT),
+        _ => Err(JsValue::from_str("live camera supports only EVT21 or EVT3")),
+    }
 }
 
 impl WasmCameraReader {
     /// Show the browser's USB device picker, then open + initialise the EVK4.
     /// Must be called from a user-gesture context (button click, etc.).
-    pub async fn open() -> Result<Self, JsValue> {
+    pub async fn open(event_type: RawEventType) -> Result<Self, JsValue> {
         let window = web_sys::window().ok_or("no window")?;
         let usb = window.navigator().usb();
 
@@ -446,7 +503,7 @@ impl WasmCameraReader {
         let _ = gloo_timers_sleep(1).await;
 
         run_seq(&device, dev_id, SENSOR_LIFO).await?;
-        run_seq(&device, dev_id, SENSOR_EVT3_FORMAT).await?;
+        run_seq(&device, dev_id, sensor_format_sequence(event_type)?).await?;
 
         // ISSD start
         run_seq(&device, dev_id, ISSD_START).await?;
@@ -472,7 +529,8 @@ impl WasmCameraReader {
             spec,
             sensor_id,
             bias_defaults,
-            decoder: Evt3Decoder::new(),
+            event_type,
+            decoder: CameraDecoder::new(event_type)?,
         })
     }
 
@@ -501,17 +559,14 @@ impl WasmCameraReader {
         let bytes: Vec<u8> = (0..len).map(|i| data.get_uint8(i)).collect();
         if bytes.is_empty() { return None; }
 
-        // Reinterpret raw bytes as Evt3 (u16) words via bytemuck (zero-copy).
-        let word_size  = std::mem::size_of::<Evt3>();
+        // Reinterpret raw bytes as the selected event format via bytemuck.
+        let word_size  = self.decoder.word_size();
         let word_count = bytes.len() / word_size;
         if word_count == 0 { return None; }
         
         // Calculate aligned byte count
         let aligned_byte_count = word_count * word_size;
-        let evts: &[Evt3] = bytemuck::cast_slice(&bytes[..aligned_byte_count]);
-
-        let mut batch = EventBatch::new();
-        self.decoder.decode(evts, &mut batch, u64::MAX, usize::MAX);
+        let batch = self.decoder.decode(&bytes[..aligned_byte_count]);
         if batch.is_empty() { 
             None 
         } else {
