@@ -1,15 +1,19 @@
 //! Initial file/camera selection screen.
 
 use eframe::egui;
+use libreeb::RawEventType;
 
 pub enum SelectionAction {
     None,
     OpenFile,
-    OpenCamera,
+    OpenCamera(RawEventType),
 }
 
 /// Show the initial selection screen.
-pub fn show_selection_screen(ctx: &egui::Context) -> SelectionAction {
+pub fn show_selection_screen(
+    ctx: &egui::Context,
+    camera_event_type: &mut RawEventType,
+) -> SelectionAction {
     let mut action = SelectionAction::None;
 
     egui::CentralPanel::default().show(ctx, |ui| {
@@ -25,8 +29,14 @@ pub fn show_selection_screen(ctx: &egui::Context) -> SelectionAction {
             ui.add_space(10.0);
             ui.label("Live camera (Chromium + WebUSB required):");
             ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Format:");
+                ui.selectable_value(camera_event_type, RawEventType::Evt21, "EVT21");
+                ui.selectable_value(camera_event_type, RawEventType::Evt3, "EVT3");
+            });
+            ui.add_space(6.0);
             if ui.button("  Connect EVK4…  ").clicked() {
-                action = SelectionAction::OpenCamera;
+                action = SelectionAction::OpenCamera(*camera_event_type);
             }
         });
     });

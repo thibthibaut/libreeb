@@ -16,7 +16,7 @@ use std::io::BufRead;
 use crate::RawFileReaderError;
 
 /// Supported event encoding formats.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawEventType {
     Evt2,
     Evt21,

@@ -19,7 +19,7 @@ use eframe::egui;
 #[cfg(target_arch = "wasm32")]
 use libreeb::{
     io::biases::BIAS_TABLE,
-    io::header::{CameraGeometry, RawFileHeader},
+    io::header::{CameraGeometry, RawEventType, RawFileHeader},
     processing::{FrameGenerator, TimeSurface},
     EventBatch, RawFileReader,
 };
@@ -44,6 +44,7 @@ use wasm_bindgen_futures::spawn_local;
 #[cfg(target_arch = "wasm32")]
 struct EventViewerApp {
     state: AppState,
+    camera_event_type: RawEventType,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -51,6 +52,7 @@ impl EventViewerApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         EventViewerApp {
             state: AppState::Selection,
+            camera_event_type: RawEventType::Evt21,
         }
     }
 }
@@ -68,9 +70,9 @@ impl eframe::App for EventViewerApp {
 impl EventViewerApp {
     fn process(&mut self, ctx: &egui::Context, state: AppState) -> AppState {
         match state {
-            AppState::Selection => match show_selection_screen(ctx) {
+            AppState::Selection => match show_selection_screen(ctx, &mut self.camera_event_type) {
                 SelectionAction::OpenFile   => start_open_file_wasm(),
-                SelectionAction::OpenCamera => start_open_camera_wasm(),
+                SelectionAction::OpenCamera(event_type) => start_open_camera_wasm(event_type),
                 SelectionAction::None       => AppState::Selection,
             },
 
@@ -488,23 +490,26 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
 // ── Camera opening ────────────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
-fn start_open_camera_wasm() -> AppState {
+fn start_open_camera_wasm(event_type: RawEventType) -> AppState {
     let init: InitSlot = Arc::new(Mutex::new(None));
     let init2 = Arc::clone(&init);
     spawn_local(async move {
-        *init2.lock().unwrap() = Some(open_camera_wasm_async().await);
+        *init2.lock().unwrap() = Some(open_camera_wasm_async(event_type).await);
     });
-    AppState::Opening { label: "Connecting EVK4… (~3 s)".into(), init }
+    AppState::Opening {
+        label: format!("Connecting EVK4 ({})… (~3 s)", event_type_label(event_type)),
+        init,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn open_camera_wasm_async() -> Result<ViewerState, String> {
+async fn open_camera_wasm_async(event_type: RawEventType) -> Result<ViewerState, String> {
     use libreeb::io::camera_web::WasmCameraReader;
     use producers::camera::RoiCommand;
 
-    let camera    = WasmCameraReader::open().await.map_err(|e| format!("{e:?}"))?;
+    let camera    = WasmCameraReader::open(event_type).await.map_err(|e| format!("{e:?}"))?;
     let geometry  = CameraGeometry { width: camera.width(), height: camera.height() };
-    let label     = format!("EVK4 — {}", camera.sensor_name());
+    let label     = format!("EVK4 — {} ({})", camera.sensor_name(), event_type_label(event_type));
     let sensor_id = camera.sensor_id;
     let bias_defaults = camera.bias_defaults.clone();
 
@@ -532,7 +537,7 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
 
     let header = RawFileHeader {
         header_dict:     std::collections::HashMap::new(),
-        event_type:      libreeb::io::header::RawEventType::Evt3,
+        event_type,
         camera_geometry: geometry,
     };
 
@@ -567,6 +572,16 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     vs.roi_height  = roi_height;
     vs.roi_enabled = roi_enabled;
     Ok(vs)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn event_type_label(event_type: RawEventType) -> &'static str {
+    match event_type {
+        RawEventType::Evt21 => "EVT21",
+        RawEventType::Evt3  => "EVT3",
+        RawEventType::Evt2  => "EVT2",
+        RawEventType::Evt4  => "EVT4",
+    }
 }
 
 // ── ViewerState constructor helper ────────────────────────────────────────────
