@@ -28,15 +28,29 @@ impl FrameGenerator {
 
     /// Generates an RGB frame from a single [`EventBatch`].
     pub fn generate(&self, batch: &EventBatch) -> RgbImage {
+        self.generate_from_batches(std::iter::once(batch))
+    }
+
+    /// Generates an RGB frame from an iterator of [`EventBatch`] references.
+    ///
+    /// Batches are painted in iteration order (last-write-wins across batches).
+    /// Typically the caller filters a [`TimeWindow`] by `window_us` and passes
+    /// the resulting iterator here, so rendering is fully consumer-side.
+    pub fn generate_from_batches<'a>(
+        &self,
+        batches: impl Iterator<Item = &'a EventBatch>,
+    ) -> RgbImage {
         let mut img = RgbImage::from_pixel(
             self.geometry.width,
             self.geometry.height,
-            image::Rgb(BACKGROUND)
+            image::Rgb(BACKGROUND),
         );
-        for evt in batch {
-            if (evt.x as u32) < self.geometry.width && (evt.y as u32) < self.geometry.height {
-                let color = if evt.p != 0 { POSITIVE } else { NEGATIVE };
-                img.put_pixel(evt.x as u32, evt.y as u32, image::Rgb(color));
+        for batch in batches {
+            for evt in batch {
+                if (evt.x as u32) < self.geometry.width && (evt.y as u32) < self.geometry.height {
+                    let color = if evt.p != 0 { POSITIVE } else { NEGATIVE };
+                    img.put_pixel(evt.x as u32, evt.y as u32, image::Rgb(color));
+                }
             }
         }
         img

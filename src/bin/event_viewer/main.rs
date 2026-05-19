@@ -17,13 +17,11 @@ mod utils;
 #[cfg(target_arch = "wasm32")]
 use eframe::egui;
 #[cfg(target_arch = "wasm32")]
-use image::RgbImage;
-#[cfg(target_arch = "wasm32")]
 use libreeb::{
     io::biases::BIAS_TABLE,
     io::header::{CameraGeometry, RawFileHeader},
     processing::{FrameGenerator, TimeSurface},
-    EventBatch, RawFileReader, SliceBy,
+    EventBatch, RawFileReader,
 };
 #[cfg(target_arch = "wasm32")]
 use producers::{WasmCameraProducer, WasmFileProducer};
@@ -37,7 +35,7 @@ use ui::{
     show_timeline_panel, BiasAction, SelectionAction,
 };
 #[cfg(target_arch = "wasm32")]
-use utils::{RateSample, TimeWindow};
+use utils::{RateSample, TimeWindow, Timestamped};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
@@ -71,9 +69,9 @@ impl EventViewerApp {
     fn process(&mut self, ctx: &egui::Context, state: AppState) -> AppState {
         match state {
             AppState::Selection => match show_selection_screen(ctx) {
-                SelectionAction::OpenFile => start_open_file_wasm(),
+                SelectionAction::OpenFile   => start_open_file_wasm(),
                 SelectionAction::OpenCamera => start_open_camera_wasm(),
-                SelectionAction::None => AppState::Selection,
+                SelectionAction::None       => AppState::Selection,
             },
 
             AppState::Opening { label, init } => {
@@ -94,22 +92,101 @@ impl EventViewerApp {
                     return AppState::Selection;
                 }
                 match init.lock().ok().and_then(|mut g| g.take()) {
-                    Some(Ok(vs)) => AppState::Viewing(vs),
-                    Some(Err(e)) => AppState::Error(e),
-                    None => AppState::Opening { label, init },
+                    Some(Ok(vs))  => AppState::Viewing(vs),
+                    Some(Err(e))  => AppState::Error(e),
+                    None          => AppState::Opening { label, init },
                 }
             }
 
             AppState::Viewing(mut v) => {
-                // ── Poll frame ────────────────────────────────────────────────
-                if let Some((batch, img, _n, rate, ts)) = v.producer.poll_frame() {
-                    upload_frame(ctx, &mut v, batch, img, rate, ts);
-                }
+                // ── Detect display-mode change before showing UI ───────────────
+                let prev_mode = v.display_mode;
 
                 // ── UI ────────────────────────────────────────────────────────
                 let panel_actions = show_info_panel(ctx, &mut v);
                 show_timeline_panel(ctx, &mut v);
                 show_canvas(ctx, &mut v);
+
+                // ── Handle mode switch TO TimeSurface ─────────────────────────
+                let entered_ts_mode = prev_mode != DisplayMode::TimeSurface
+                    && v.display_mode == DisplayMode::TimeSurface;
+                if entered_ts_mode {
+                    // Reset accumulator and replay whole buffer for catch-up.
+                    v.time_surface = TimeSurface::new(v.width, v.height);
+                    // (replay happens below inside the buffer lock)
+                }
+
+                // ── Consume new events from shared buffer ─────────────────────
+                {
+                    let buffer = v.event_buffer.lock().unwrap();
+                    let ts_before = v.last_processed_ts;
+
+                    // Update dropped count.
+                    v.dropped_count = buffer.dropped_count();
+
+                    // Stats: process all batches newer than last_processed_ts.
+                    for batch in buffer
+                        .iter()
+                        .filter(|b| b.timestamp_us() > ts_before && !b.is_empty())
+                    {
+                        let t    = batch.timestamp_us();
+                        let rate = batch_rate(batch);
+                        v.rate_history.push(RateSample { t, rate });
+                        if v.first_timestamp.is_none() {
+                            v.first_timestamp = Some(t);
+                        }
+                        v.last_timestamp  = Some(batch.t.last().copied().unwrap_or(0));
+                        v.frame_count    += 1;
+                        v.last_processed_ts = t;
+                    }
+
+                    // ── TimeSurface: catch-up or incremental update ────────────
+                    if v.display_mode == DisplayMode::TimeSurface {
+                        let ts_start = if entered_ts_mode { 0u64 } else { ts_before };
+                        for batch in buffer
+                            .iter()
+                            .filter(|b| b.timestamp_us() > ts_start && !b.is_empty())
+                        {
+                            v.time_surface.update(batch);
+                        }
+                        if let Some(ts_now) = buffer.newest_t() {
+                            let img = v.time_surface.render(ts_now, v.ts_decay_us);
+                            upload_texture(
+                                ctx,
+                                &mut v.ts_texture,
+                                "time_surface",
+                                &img,
+                                v.width,
+                                v.height,
+                            );
+                        }
+                    }
+
+                    // ── Normal mode: render from window_us slice ──────────────
+                    if v.display_mode == DisplayMode::Normal {
+                        let cutoff = buffer
+                            .newest_t()
+                            .unwrap_or(0)
+                            .saturating_sub(v.window_us as u64);
+                        let img = v
+                            .frame_generator
+                            .generate_from_batches(
+                                buffer.iter().filter(|b| b.timestamp_us() >= cutoff),
+                            );
+                        upload_texture(
+                            ctx,
+                            &mut v.frame_texture,
+                            "frame",
+                            &img,
+                            v.width,
+                            v.height,
+                        );
+                    }
+                } // ← buffer lock released
+
+                // ── Render FPS ────────────────────────────────────────────────
+                v.fps_tracker.record();
+                v.render_fps = v.fps_tracker.fps();
 
                 // ── ROI → hardware ────────────────────────────────────────────
                 if panel_actions.roi_changed && v.is_camera {
@@ -139,9 +216,8 @@ impl EventViewerApp {
                     v.producer.stop();
                     return AppState::Selection;
                 }
-                if panel_actions.slice_changed {
-                    v.producer.set_slice(SliceBy::Time(v.window_us as u64));
-                }
+                // NOTE: slice_changed no longer calls set_slice on the producer —
+                // window_us is a rendering-only parameter now.
                 if panel_actions.speed_changed {
                     v.producer.set_playback_speed(v.playback_speed);
                 }
@@ -156,7 +232,7 @@ impl EventViewerApp {
                 if panel_actions.recording_stop {
                     v.producer.stop_recording();
                     if let Ok(mut rec) = v.recorder.lock() {
-                        let buf = rec.stop();
+                        let buf   = rec.stop();
                         let fname = rec.filename.clone();
                         download_file(&fname, &buf);
                         rec.reset();
@@ -179,7 +255,7 @@ impl EventViewerApp {
                         });
                     }
                     BiasAction::Load => {
-                        let slot = Arc::new(Mutex::new(None::<Vec<i32>>));
+                        let slot  = Arc::new(Mutex::new(None::<Vec<i32>>));
                         let slot2 = Arc::clone(&slot);
                         spawn_local(async move {
                             if let Some(file) = rfd::AsyncFileDialog::new()
@@ -187,7 +263,7 @@ impl EventViewerApp {
                                 .pick_file()
                                 .await
                             {
-                                let bytes = file.read().await;
+                                let bytes   = file.read().await;
                                 let content = String::from_utf8_lossy(&bytes);
                                 if let Ok(offsets) = parse_bias_file(&content) {
                                     *slot2.lock().unwrap() = Some(offsets);
@@ -206,7 +282,7 @@ impl EventViewerApp {
                     BiasAction::None => {}
                 }
 
-                // Pending async bias load
+                // Pending async bias load.
                 let mut loaded = None;
                 if let Some(ref slot) = v.pending_bias_load {
                     if let Ok(mut g) = slot.try_lock() {
@@ -269,73 +345,46 @@ impl EventViewerApp {
     }
 }
 
-// ── Frame upload ──────────────────────────────────────────────────────────────
+// ── Texture upload helper ─────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
-fn upload_frame(
-    ctx: &egui::Context,
-    v: &mut ViewerState,
-    batch: EventBatch,
-    img: RgbImage,
-    rate: f64,
-    timestamp: u64,
+fn upload_texture(
+    ctx:     &egui::Context,
+    slot:    &mut Option<egui::TextureHandle>,
+    name:    &str,
+    img:     &image::RgbImage,
+    width:   u32,
+    height:  u32,
 ) {
-    // ── Normal frame texture ──────────────────────────────────────────────────
     let pixels: Vec<egui::Color32> = img
         .pixels()
         .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
         .collect();
     let ci = egui::ColorImage {
-        size: [v.width as usize, v.height as usize],
+        size:   [width as usize, height as usize],
         pixels,
     };
-    match &mut v.frame_texture {
+    match slot {
         Some(t) => t.set(ci, egui::TextureOptions::NEAREST),
-        None => {
-            v.frame_texture = Some(ctx.load_texture("frame", ci, egui::TextureOptions::NEAREST));
+        None    => *slot = Some(ctx.load_texture(name, ci, egui::TextureOptions::NEAREST)),
+    }
+}
+
+// ── Batch rate helper ─────────────────────────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+fn batch_rate(batch: &EventBatch) -> f64 {
+    let n = batch.len();
+    if n >= 2 {
+        let dt_us = batch.t.last().unwrap().saturating_sub(batch.t[0]);
+        if dt_us > 0 {
+            n as f64 / (dt_us as f64 * 1e-6)
+        } else {
+            0.0
         }
+    } else {
+        0.0
     }
-
-    // ── Stats ─────────────────────────────────────────────────────────────────
-    v.frame_count += 1;
-    if v.first_timestamp.is_none() {
-        v.first_timestamp = Some(timestamp);
-    }
-    v.last_timestamp = Some(timestamp);
-
-    v.fps_tracker.record();
-    v.render_fps = v.fps_tracker.fps();
-
-    // ── Event-rate history ────────────────────────────────────────────────────
-    v.rate_history.push(RateSample { t: timestamp, rate });
-
-    // ── Time-surface accumulator ──────────────────────────────────────────────
-    v.time_surface.update(&batch);
-
-    // Render to texture only when that mode is active (avoids 921K-pixel / 60fps cost).
-    if v.display_mode == DisplayMode::TimeSurface {
-        let img = v.time_surface.render(timestamp, v.ts_decay_us);
-        let pixels: Vec<egui::Color32> = img
-            .pixels()
-            .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
-            .collect();
-        let ci = egui::ColorImage {
-            size: [v.width as usize, v.height as usize],
-            pixels,
-        };
-        match &mut v.ts_texture {
-            Some(t) => t.set(ci, egui::TextureOptions::NEAREST),
-            None => {
-                v.ts_texture =
-                    Some(ctx.load_texture("time_surface", ci, egui::TextureOptions::NEAREST));
-            }
-        }
-    }
-
-    // ── XYT sliding window (always filled, regardless of display mode) ────────
-    // TimeWindow handles sensor-time eviction (2 s), clock-reset detection
-    // (file loops), and the 60-slice count cap internally.
-    v.xyt_buffer.push(batch);
 }
 
 // ── Download helper ───────────────────────────────────────────────────────────
@@ -345,27 +394,21 @@ fn download_file(filename: &str, data: &[u8]) {
     use wasm_bindgen::JsCast;
     use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => return,
-    };
-    let document = match window.document() {
-        Some(d) => d,
-        None => return,
-    };
+    let window   = match web_sys::window() { Some(w) => w, None => return };
+    let document = match window.document()  { Some(d) => d, None => return };
 
-    let array = js_sys::Uint8Array::from(data);
+    let array      = js_sys::Uint8Array::from(data);
     let blob_parts = js_sys::Array::new();
     blob_parts.push(&array);
     let props = BlobPropertyBag::new();
     props.set_type("application/octet-stream");
 
     let blob = match Blob::new_with_u8_array_sequence_and_options(&blob_parts, &props) {
-        Ok(b) => b,
+        Ok(b)  => b,
         Err(_) => return,
     };
     let url = match Url::create_object_url_with_blob(&blob) {
-        Ok(u) => u,
+        Ok(u)  => u,
         Err(_) => return,
     };
     if let Ok(a) = document.create_element("a") {
@@ -387,10 +430,7 @@ fn start_open_file_wasm() -> AppState {
     spawn_local(async move {
         *init2.lock().unwrap() = Some(open_file_wasm_async().await);
     });
-    AppState::Opening {
-        label: "Picking file…".into(),
-        init,
-    }
+    AppState::Opening { label: "Picking file…".into(), init }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -401,7 +441,7 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         .await
         .ok_or("No file selected")?;
 
-    let label = file.file_name();
+    let label  = file.file_name();
     let bytes: Arc<[u8]> = file.read().await.into();
 
     let mut probe = RawFileReader::from_reader(std::io::Cursor::new(Arc::clone(&bytes)))
@@ -410,7 +450,7 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         probe.scan_geometry(8);
     }
     let geometry = CameraGeometry {
-        width: probe.header.camera_geometry.width.max(1),
+        width:  probe.header.camera_geometry.width.max(1),
         height: probe.header.camera_geometry.height.max(1),
     };
     let header = probe.header;
@@ -421,10 +461,14 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         .collect();
     header_info.sort_by(|a, b| a.0.cmp(&b.0));
 
+    let event_buffer = Arc::new(Mutex::new(TimeWindow::<EventBatch>::new(
+        2_000_000,
+        30_000,
+    )));
     let producer = Box::new(WasmFileProducer::new(
         Arc::clone(&bytes),
         geometry,
-        SliceBy::Time(33_333),
+        Arc::clone(&event_buffer),
         header,
     ));
 
@@ -436,6 +480,7 @@ async fn open_file_wasm_async() -> Result<ViewerState, String> {
         None,
         vec![],
         vec![],
+        event_buffer,
         producer,
     ))
 }
@@ -449,25 +494,17 @@ fn start_open_camera_wasm() -> AppState {
     spawn_local(async move {
         *init2.lock().unwrap() = Some(open_camera_wasm_async().await);
     });
-    AppState::Opening {
-        label: "Connecting EVK4… (~3 s)".into(),
-        init,
-    }
+    AppState::Opening { label: "Connecting EVK4… (~3 s)".into(), init }
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     use libreeb::io::camera_web::WasmCameraReader;
-    use producers::camera::{RoiCommand, WasmShared};
+    use producers::camera::RoiCommand;
 
-    let camera = WasmCameraReader::open()
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let geometry = CameraGeometry {
-        width: camera.width(),
-        height: camera.height(),
-    };
-    let label = format!("EVK4 — {}", camera.sensor_name());
+    let camera    = WasmCameraReader::open().await.map_err(|e| format!("{e:?}"))?;
+    let geometry  = CameraGeometry { width: camera.width(), height: camera.height() };
+    let label     = format!("EVK4 — {}", camera.sensor_name());
     let sensor_id = camera.sensor_id;
     let bias_defaults = camera.bias_defaults.clone();
 
@@ -485,127 +522,32 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
     let (roi_left, roi_top, roi_width, roi_height, roi_enabled) =
         storage::load_roi(sensor_id).unwrap_or((0, 0, geometry.width, geometry.height, false));
 
-    // Build the pending ROI command to apply after the camera loop starts.
-    let pending_roi = if roi_enabled {
-        let x0 = roi_left;
-        let y0 = roi_top;
+    let initial_roi: Option<RoiCommand> = if roi_enabled {
         let x1 = (roi_left + roi_width).saturating_sub(1);
         let y1 = (roi_top + roi_height).saturating_sub(1);
-        Some(RoiCommand::Set(x0, y0, x1, y1))
+        Some(RoiCommand::Set(roi_left, roi_top, x1, y1))
     } else {
         None
     };
 
-    let shared = Arc::new(Mutex::new(WasmShared {
-        latest_result: None,
-        pending_slice: None,
-        pending_biases: if initial_biases.is_empty() {
-            None
-        } else {
-            Some(initial_biases)
-        },
-        pending_roi,
-        stop: false,
-        recorder: None,
-    }));
-    let shared_task = Arc::clone(&shared);
-    let generator = FrameGenerator::new(geometry);
-
     let header = RawFileHeader {
-        header_dict: std::collections::HashMap::new(),
-        event_type: libreeb::io::header::RawEventType::Evt3,
+        header_dict:     std::collections::HashMap::new(),
+        event_type:      libreeb::io::header::RawEventType::Evt3,
         camera_geometry: geometry,
     };
-    let mut slice = SliceBy::Time(33_333);
 
-    spawn_local(async move {
-        let mut camera = camera;
-        let mut acc = libreeb::EventBatch::new();
-        loop {
-            let (stop, new_slice, biases, roi_cmd) = {
-                let mut s = match shared_task.lock() {
-                    Ok(g) => g,
-                    Err(_) => break,
-                };
-                (
-                    s.stop,
-                    s.pending_slice.take(),
-                    s.pending_biases.take(),
-                    s.pending_roi.take(),
-                )
-            };
-            if stop {
-                camera.stop().await;
-                break;
-            }
-            if let Some(sl) = new_slice {
-                slice = sl;
-                acc = libreeb::EventBatch::new();
-            }
-            if let Some(bs) = biases {
-                for (idx, factory, offset) in bs {
-                    let _ = camera
-                        .write_bias(BIAS_TABLE[idx].addr, factory, offset)
-                        .await;
-                }
-            }
-            if let Some(cmd) = roi_cmd {
-                match cmd {
-                    RoiCommand::Set(x0, y0, x1, y1) => {
-                        let _ = camera.set_roi(x0, y0, x1, y1).await;
-                    }
-                    RoiCommand::Clear => {
-                        let _ = camera.clear_roi().await;
-                    }
-                }
-            }
-
-            if let Some((mut batch, raw)) = camera.read_batch_with_bytes().await {
-                acc.append(&mut batch);
-                if let Ok(s) = shared_task.lock() {
-                    if let Some(ref rec) = s.recorder {
-                        if let Ok(mut r) = rec.lock() {
-                            r.buffer.extend_from_slice(&raw);
-                        }
-                    }
-                }
-            } else {
-                // Yield to the browser event loop on empty reads to avoid starving egui.
-                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
-                    &wasm_bindgen::JsValue::UNDEFINED,
-                ))
-                .await
-                .ok();
-            }
-
-            let emit = match slice {
-                SliceBy::Time(us) => {
-                    acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= us
-                }
-                SliceBy::Count(n) => acc.len() >= n,
-                SliceBy::Both(us, n) => {
-                    (acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= us)
-                        || acc.len() >= n
-                }
-                SliceBy::Bytes => false,
-            };
-            if emit && !acc.is_empty() {
-                let ev = acc.len();
-                let dt = acc.t.last().unwrap().saturating_sub(acc.t[0]);
-                let rate = if dt > 0 {
-                    ev as f64 / (dt as f64 * 1e-6)
-                } else {
-                    0.0
-                };
-                let ts = acc.t.last().copied().unwrap_or(0);
-                let frame = generator.generate(&acc);
-                let batch = std::mem::replace(&mut acc, libreeb::EventBatch::new());
-                if let Ok(mut s) = shared_task.lock() {
-                    s.latest_result = Some((batch, frame, ev, rate, ts));
-                }
-            }
-        }
-    });
+    let event_buffer = Arc::new(Mutex::new(TimeWindow::<EventBatch>::new(
+        2_000_000,
+        30_000,
+    )));
+    let producer = Box::new(WasmCameraProducer::new(
+        camera,
+        geometry,
+        Arc::clone(&event_buffer),
+        header,
+        if initial_biases.is_empty() { None } else { Some(initial_biases) },
+        initial_roi,
+    ));
 
     let mut vs = new_viewer_state(
         geometry,
@@ -615,13 +557,14 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
         Some(sensor_id),
         bias_defaults,
         bias_offsets,
-        Box::new(WasmCameraProducer { shared, header }),
+        event_buffer,
+        producer,
     );
     // Restore persisted ROI into ViewerState.
-    vs.roi_left = roi_left;
-    vs.roi_top = roi_top;
-    vs.roi_width = roi_width;
-    vs.roi_height = roi_height;
+    vs.roi_left    = roi_left;
+    vs.roi_top     = roi_top;
+    vs.roi_width   = roi_width;
+    vs.roi_height  = roi_height;
     vs.roi_enabled = roi_enabled;
     Ok(vs)
 }
@@ -629,18 +572,20 @@ async fn open_camera_wasm_async() -> Result<ViewerState, String> {
 // ── ViewerState constructor helper ────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
 fn new_viewer_state(
-    geometry: CameraGeometry,
-    label: String,
-    header_info: Vec<(String, String)>,
-    is_camera: bool,
-    sensor_id: Option<u32>,
+    geometry:     CameraGeometry,
+    label:        String,
+    header_info:  Vec<(String, String)>,
+    is_camera:    bool,
+    sensor_id:    Option<u32>,
     bias_defaults: Vec<u8>,
-    bias_offsets: Vec<i32>,
-    producer: Box<dyn producers::Producer>,
+    bias_offsets:  Vec<i32>,
+    event_buffer:  Arc<Mutex<TimeWindow<EventBatch>>>,
+    producer:      Box<dyn producers::Producer>,
 ) -> ViewerState {
     ViewerState {
-        width: geometry.width,
+        width:  geometry.width,
         height: geometry.height,
         label,
         header_info,
@@ -648,37 +593,41 @@ fn new_viewer_state(
         sensor_id,
         producer,
 
-        first_timestamp: None,
-        last_timestamp: None,
-        frame_count: 0,
-        fps_tracker: FpsTracker::new(),
-        render_fps: 0.0,
+        event_buffer,
 
-        window_us: 33_333.0,
+        first_timestamp:    None,
+        last_timestamp:     None,
+        frame_count:        0,
+        fps_tracker:        FpsTracker::new(),
+        render_fps:         0.0,
+        last_processed_ts:  0,
+        dropped_count:      0,
+
+        window_us:      33_333.0,
         playback_speed: 1.0,
-        playback_fps: 0.0,
+        playback_fps:   0.0,
 
-        display_mode: DisplayMode::Normal,
-        frame_texture: None,
+        display_mode:    DisplayMode::Normal,
+        frame_texture:   None,
+        frame_generator: FrameGenerator::new(geometry),
 
         time_surface: TimeSurface::new(geometry.width, geometry.height),
-        ts_texture: None,
-        ts_decay_us: 30_000,
+        ts_texture:   None,
+        ts_decay_us:  30_000,
 
-        xyt_buffer: TimeWindow::new(2_000_000, 20),
-        xyt_azimuth: 45.0,
-        xyt_elevation: 30.0,
+        xyt_azimuth:    45.0,
+        xyt_elevation:  30.0,
         xyt_point_size: 1.5,
-        xyt_zoom: 1.0,
+        xyt_zoom:       1.0,
 
-        rate_history: TimeWindow::new(300_000_000, 18_000),
+        rate_history:    TimeWindow::new(300_000_000, 18_000),
         rate_lookback_s: 10.0,
 
         roi_enabled: false,
-        roi_left: 0,
-        roi_top: 0,
-        roi_width: geometry.width,
-        roi_height: geometry.height,
+        roi_left:    0,
+        roi_top:     0,
+        roi_width:   geometry.width,
+        roi_height:  geometry.height,
 
         bias_defaults,
         bias_offsets,

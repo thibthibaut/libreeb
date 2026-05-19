@@ -3,23 +3,20 @@
 #[cfg(target_arch = "wasm32")]
 use crate::recording::RecordingState;
 #[cfg(target_arch = "wasm32")]
-use image::RgbImage;
-#[cfg(target_arch = "wasm32")]
-use libreeb::{io::header::RawFileHeader, EventBatch, SliceBy};
+use libreeb::io::header::RawFileHeader;
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Arc, Mutex};
 
-#[cfg(target_arch = "wasm32")]
-pub use camera::RoiCommand;
-
+/// Push-based event source.
+///
+/// Producers spawn their own internal async loop (via `spawn_local`) that
+/// pushes [`EventBatch`] items into the shared `TimeWindow`.  The UI reads
+/// from that window independently — there is no `poll_frame` call.
+///
+/// The methods below are the only controls the UI needs to reach into the
+/// producer after construction.
 #[cfg(target_arch = "wasm32")]
 pub trait Producer: Send + 'static {
-    /// Returns (batch, frame, event_count, event_rate_ev_per_s, last_timestamp_us) for the latest slice.
-    fn poll_frame(&mut self) -> Option<(EventBatch, RgbImage, usize, f64, u64)>;
-
-    /// Set slice window.
-    fn set_slice(&mut self, slice: SliceBy);
-
     /// Apply bias settings (camera mode only).
     fn apply_biases(&mut self, biases: Vec<(usize, u8, i32)>);
 
@@ -31,7 +28,7 @@ pub trait Producer: Send + 'static {
     /// Set playback speed multiplier (file mode only).
     fn set_playback_speed(&mut self, speed: f32);
 
-    /// Stop the producer.
+    /// Stop the producer's async loop.
     fn stop(&mut self);
 
     /// Get reference to header (for recording).
@@ -55,19 +52,3 @@ pub use file::WasmFileProducer;
 
 #[cfg(target_arch = "wasm32")]
 pub use camera::WasmCameraProducer;
-
-/// Calculate event rate from a batch.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn calculate_rate(batch: &libreeb::EventBatch) -> f64 {
-    let n = batch.len();
-    if n >= 2 {
-        let dt_us = batch.t.last().unwrap().saturating_sub(batch.t[0]);
-        if dt_us > 0 {
-            n as f64 / (dt_us as f64 * 1e-6)
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    }
-}

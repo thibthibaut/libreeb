@@ -107,6 +107,12 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
                         ui.label(format!("Elapsed: {}", format_timestamp(last.saturating_sub(first))));
                     }
                     ui.label(format!("Render: {:.1} fps", v.render_fps));
+                    if v.dropped_count > 0 {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(235, 160, 50),
+                            format!("Dropped: {} batches (buffer full)", v.dropped_count),
+                        );
+                    }
                 });
 
             ui.add_space(4.0);

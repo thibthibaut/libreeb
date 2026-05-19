@@ -7,7 +7,7 @@ use crate::producers::Producer;
 use crate::recording::RecordingState;
 use crate::utils::{RateSample, TimeWindow};
 use eframe::egui;
-use libreeb::{processing::TimeSurface, EventBatch};
+use libreeb::{processing::{FrameGenerator, TimeSurface}, EventBatch};
 use std::sync::{Arc, Mutex};
 use web_time::Instant;
 
@@ -54,12 +54,23 @@ pub struct ViewerState {
     // ── Data source ───────────────────────────────────────────────────────────
     pub producer: Box<dyn Producer>,
 
+    // ── Shared event buffer ───────────────────────────────────────────────────
+    /// Sensor-time sliding window shared with the producer's async loop.
+    /// The producer pushes batches; all rendering reads from this.
+    /// Caps: 2 s time window, 30 000 batch count.
+    pub event_buffer: Arc<Mutex<TimeWindow<EventBatch>>>,
+
     // ── Timing / stats ────────────────────────────────────────────────────────
     pub first_timestamp: Option<u64>, // TODO: document what is this
     pub last_timestamp: Option<u64>,  // TODO: document what is this
     pub frame_count: u64,
     pub fps_tracker: FpsTracker,
     pub render_fps: f32, // UI render FPS
+
+    /// Highest sensor timestamp already accounted for in stats and TimeSurface.
+    pub last_processed_ts: u64,
+    /// Total batches dropped by the event_buffer count cap (informational).
+    pub dropped_count: u64,
 
     // ── Playback (file mode) ──────────────────────────────────────────────────
     pub window_us: f32,
@@ -69,21 +80,19 @@ pub struct ViewerState {
     // ── Canvas display ────────────────────────────────────────────────────────
     pub display_mode: DisplayMode,
 
-    // Normal frame texture (always updated from every event batch).
+    // Normal frame texture — regenerated each render from `window_us` slice of event_buffer.
     pub frame_texture: Option<egui::TextureHandle>,
+    /// Frame generator used for Normal mode (holds camera geometry).
+    pub frame_generator: FrameGenerator,
 
     // Time surface: accumulator + rendered texture.
-    // `ts_texture` is updated inside `upload_frame` only when mode == TimeSurface,
-    // avoiding the 921K-pixel / 60fps cost of re-rendering every egui repaint.
+    // `ts_texture` is updated inside `process()` only when mode == TimeSurface.
     pub time_surface: TimeSurface,
     pub ts_texture: Option<egui::TextureHandle>,
     pub ts_decay_us: u64,
 
     // ── XYT 3-D point cloud ───────────────────────────────────────────────────
-    /// Sliding window of event batches — sensor-time eviction (2 s) + count cap
-    /// (60 slices).  The renderer iterates all batches and all events within
-    /// each batch; no subsampling step is needed.
-    pub xyt_buffer: TimeWindow<EventBatch>,
+    /// XYT renderer reads directly from `event_buffer` (no separate buffer).
     pub xyt_azimuth: f32,
     pub xyt_elevation: f32,
     pub xyt_point_size: f32,
