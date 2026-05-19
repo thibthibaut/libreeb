@@ -52,10 +52,13 @@ impl Timestamped for RateSample {
 /// 3. **Time eviction** — pop from the front while
 ///    `oldest.t < (newest.t − time_cap_us)`.
 /// 4. **Count safeguard** — pop from the front while `len > count_cap`.
+///    Items evicted by the count cap increment [`dropped_count`](TimeWindow::dropped_count).
 pub struct TimeWindow<T: Timestamped> {
-    items:       VecDeque<T>,
-    time_cap_us: u64,
-    count_cap:   usize,
+    items:         VecDeque<T>,
+    time_cap_us:   u64,
+    count_cap:     usize,
+    /// Monotonically increasing count of items dropped by the count cap.
+    dropped_count: u64,
 }
 
 impl<T: Timestamped> TimeWindow<T> {
@@ -64,6 +67,7 @@ impl<T: Timestamped> TimeWindow<T> {
             items: VecDeque::new(),
             time_cap_us,
             count_cap,
+            dropped_count: 0,
         }
     }
 
@@ -89,6 +93,7 @@ impl<T: Timestamped> TimeWindow<T> {
         // 4. Count safeguard from front (oldest first).
         while self.items.len() > self.count_cap {
             self.items.pop_front();
+            self.dropped_count += 1;
         }
     }
 
@@ -100,6 +105,9 @@ impl<T: Timestamped> TimeWindow<T> {
     pub fn len(&self)      -> usize { self.items.len() }
     pub fn is_empty(&self) -> bool  { self.items.is_empty() }
     pub fn clear(&mut self)         { self.items.clear(); }
+
+    /// Total items evicted by the count cap since construction (monotonically increasing).
+    pub fn dropped_count(&self) -> u64 { self.dropped_count }
 
     /// Sensor timestamp of the newest (most recently pushed) item.
     pub fn newest_t(&self) -> Option<u64> { self.items.back().map(|e| e.timestamp_us()) }

@@ -24,7 +24,7 @@ const T_STRETCH: f32 = 2.0;
 /// Render the 3-D XYT point cloud into the full available area of `ui`.
 /// Called from `canvas.rs` when `DisplayMode::Xyt3D` is active.
 pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
-    let avail = ui.available_size();
+    let avail       = ui.available_size();
     let canvas_size = avail.min_elem().max(80.0);
     let (canvas_response, painter) =
         ui.allocate_painter(avail, egui::Sense::drag() | egui::Sense::hover());
@@ -59,28 +59,26 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
     // ── Axes ──────────────────────────────────────────────────────────────────
     draw_axes(&painter, cx, cy, scale, sa, ca, se, ce);
 
-    // ── T-axis normalisation ──────────────────────────────────────────────────
-    // newest = +0.5 (front of cloud), oldest = −0.5 (back).
-    // Uses sensor timestamps from the buffer; the TimeWindow's clock-reset
-    // guard ensures these are always within a coherent 2-second window.
-    let newest_t = v.xyt_buffer.newest_t().unwrap_or(0);
-    let oldest_t = v.xyt_buffer.oldest_t().unwrap_or(newest_t.saturating_sub(2_000_000));
+    // ── Collect and project events from shared buffer ─────────────────────────
+    let buffer = v.event_buffer.lock().unwrap();
+
+    // T-axis normalisation: newest = +0.5, oldest = −0.5.
+    let newest_t = buffer.newest_t().unwrap_or(0);
+    let oldest_t = buffer.oldest_t().unwrap_or(newest_t.saturating_sub(2_000_000));
     let t_range  = (newest_t - oldest_t).max(1) as f32;
 
     let inv_w   = 1.0 / v.width  as f32;
     let inv_h   = 1.0 / v.height as f32;
     let pt_size = v.xyt_point_size;
 
-    // ── Collect and project events ────────────────────────────────────────────
     // Per-batch subsampling: each batch gets an equal share of the display
     // budget.  Sparse batches (few events) use step=1 and show every event;
     // dense batches are subsampled so the total stays near MAX_DISPLAY_POINTS.
-    // This gives visually balanced temporal density across the cloud.
     const MAX_DISPLAY_POINTS: usize = 30_000;
-    let num_batches      = v.xyt_buffer.len().max(1);
+    let num_batches      = buffer.len().max(1);
     let budget_per_batch = (MAX_DISPLAY_POINTS / num_batches).max(1);
 
-    for batch in v.xyt_buffer.iter() {
+    for batch in buffer.iter() {
         let step = (batch.len() / budget_per_batch).max(1);
         for i in (0..batch.len()).step_by(step) {
             // Normalise to [−0.5, +0.5].
@@ -119,6 +117,7 @@ pub fn draw_xyt_3d(ui: &mut egui::Ui, v: &mut ViewerState) {
             );
         }
     }
+    drop(buffer); // release lock before drawing labels
 
     // ── Axis labels ───────────────────────────────────────────────────────────
     let axis_labels = [
