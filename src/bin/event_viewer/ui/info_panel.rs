@@ -8,28 +8,28 @@ use eframe::egui;
 // ── Action bundle returned to main ───────────────────────────────────────────
 
 pub struct PanelActions {
-    pub close:           bool,
-    pub slice_changed:   bool,
-    pub bias_changed:    bool,
-    pub bias_action:     BiasAction,
-    pub speed_changed:   bool,
+    pub close: bool,
+    pub pause_changed: bool,
+    pub bias_changed: bool,
+    pub bias_action: BiasAction,
+    pub speed_changed: bool,
     pub recording_start: bool,
-    pub recording_stop:  bool,
+    pub recording_stop: bool,
     /// ROI settings changed — apply to hardware.
-    pub roi_changed:     bool,
+    pub roi_changed: bool,
 }
 
 impl Default for PanelActions {
     fn default() -> Self {
         PanelActions {
-            close:           false,
-            slice_changed:   false,
-            bias_changed:    false,
-            bias_action:     BiasAction::None,
-            speed_changed:   false,
+            close: false,
+            pause_changed: false,
+            bias_changed: false,
+            bias_action: BiasAction::None,
+            speed_changed: false,
             recording_start: false,
-            recording_stop:  false,
-            roi_changed:     false,
+            recording_stop: false,
+            roi_changed: false,
         }
     }
 }
@@ -39,9 +39,9 @@ impl Default for PanelActions {
 fn format_timestamp(us: u64) -> String {
     let total_ms = us / 1000;
     let ms = total_ms % 1000;
-    let s  = (total_ms / 1000) % 60;
-    let m  = (total_ms / 60_000) % 60;
-    let h  = total_ms / 3_600_000;
+    let s = (total_ms / 1000) % 60;
+    let m = (total_ms / 60_000) % 60;
+    let h = total_ms / 3_600_000;
     format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
 }
 
@@ -104,7 +104,10 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
                         ui.label(format!("Time:   {}", format_timestamp(ts)));
                     }
                     if let (Some(first), Some(last)) = (v.first_timestamp, v.last_timestamp) {
-                        ui.label(format!("Elapsed: {}", format_timestamp(last.saturating_sub(first))));
+                        ui.label(format!(
+                            "Elapsed: {}",
+                            format_timestamp(last.saturating_sub(first))
+                        ));
                     }
                     ui.label(format!("Render: {:.1} fps", v.render_fps));
                     if v.dropped_count > 0 {
@@ -123,43 +126,47 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
                 .show(ui, |ui| {
                     ui.label("Canvas:");
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut v.display_mode, DisplayMode::Normal,      "Normal");
-                        ui.selectable_value(&mut v.display_mode, DisplayMode::TimeSurface, "Time Surface");
-                        ui.selectable_value(&mut v.display_mode, DisplayMode::Xyt3D,       "3D XYT");
+                        ui.selectable_value(&mut v.display_mode, DisplayMode::Normal, "Normal");
+                        ui.selectable_value(
+                            &mut v.display_mode,
+                            DisplayMode::TimeSurface,
+                            "Time Surface",
+                        );
+                        ui.selectable_value(&mut v.display_mode, DisplayMode::Xyt3D, "3D XYT");
                     });
 
-                    if v.display_mode == DisplayMode::TimeSurface {
+                    if v.display_mode == DisplayMode::Normal {
+                        ui.add_space(4.0);
+                        let mut accumulation_ms = v.window_us / 1_000.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut accumulation_ms, 1.0..=200.0)
+                                    .text("accumulation")
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            v.window_us = accumulation_ms * 1_000.0;
+                        }
+                    } else if v.display_mode == DisplayMode::TimeSurface {
                         ui.add_space(4.0);
                         let mut decay_ms = v.ts_decay_us as f32 / 1_000.0;
-                        if ui.add(
-                            egui::Slider::new(&mut decay_ms, 1.0..=500.0)
-                                .text("decay")
-                                .suffix(" ms"),
-                        ).changed() {
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut decay_ms, 1.0..=500.0)
+                                    .text("decay")
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
                             v.ts_decay_us = (decay_ms * 1_000.0) as u64;
                         }
-                    }
-
-                    if v.display_mode == DisplayMode::Xyt3D {
+                    } else if v.display_mode == DisplayMode::Xyt3D {
                         ui.add_space(4.0);
                         ui.add(
                             egui::Slider::new(&mut v.xyt_point_size, 0.5..=4.0)
                                 .text("pt size")
                                 .suffix(" px"),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("View:");
-                            if ui.small_button("3D").clicked() { v.xyt_azimuth = 45.0; v.xyt_elevation = 30.0; }
-                            if ui.small_button("XY").clicked() { v.xyt_azimuth =  0.0; v.xyt_elevation = 90.0; }
-                            if ui.small_button("XT").clicked() { v.xyt_azimuth =  0.0; v.xyt_elevation =  0.0; }
-                            if ui.small_button("YT").clicked() { v.xyt_azimuth = 90.0; v.xyt_elevation =  0.0; }
-                        });
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "az {:.0}°  el {:.0}°", v.xyt_azimuth, v.xyt_elevation
-                            ))
-                            .small()
-                            .monospace(),
                         );
                     }
                 });
@@ -173,7 +180,9 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
                     .show(ui, |ui| {
                         let prev_enabled = v.roi_enabled;
                         ui.checkbox(&mut v.roi_enabled, "Enable hardware ROI");
-                        if v.roi_enabled != prev_enabled { actions.roi_changed = true; }
+                        if v.roi_enabled != prev_enabled {
+                            actions.roi_changed = true;
+                        }
 
                         if v.roi_enabled {
                             let w = v.width;
@@ -182,30 +191,44 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
                             let prev = v.roi_left;
                             let max_left = w.saturating_sub(v.roi_width).saturating_sub(1);
                             ui.add(egui::Slider::new(&mut v.roi_left, 0..=max_left).text("left"));
-                            if v.roi_left != prev { actions.roi_changed = true; }
+                            if v.roi_left != prev {
+                                actions.roi_changed = true;
+                            }
 
                             let prev = v.roi_top;
                             let max_top = h.saturating_sub(v.roi_height).saturating_sub(1);
                             ui.add(egui::Slider::new(&mut v.roi_top, 0..=max_top).text("top"));
-                            if v.roi_top != prev { actions.roi_changed = true; }
+                            if v.roi_top != prev {
+                                actions.roi_changed = true;
+                            }
 
                             let prev = v.roi_width;
                             let max_w = w.saturating_sub(v.roi_left);
                             ui.add(egui::Slider::new(&mut v.roi_width, 1..=max_w).text("width"));
-                            if v.roi_width != prev { actions.roi_changed = true; }
+                            if v.roi_width != prev {
+                                actions.roi_changed = true;
+                            }
 
                             let prev = v.roi_height;
                             let max_h = h.saturating_sub(v.roi_top);
                             ui.add(egui::Slider::new(&mut v.roi_height, 1..=max_h).text("height"));
-                            if v.roi_height != prev { actions.roi_changed = true; }
+                            if v.roi_height != prev {
+                                actions.roi_changed = true;
+                            }
 
-                            ui.label(egui::RichText::new(format!(
-                                "→ ({},{})–({},{})  {}×{}",
-                                v.roi_left, v.roi_top,
-                                v.roi_left + v.roi_width  - 1,
-                                v.roi_top  + v.roi_height - 1,
-                                v.roi_width, v.roi_height,
-                            )).small().color(egui::Color32::GRAY));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "→ ({},{})–({},{})  {}×{}",
+                                    v.roi_left,
+                                    v.roi_top,
+                                    v.roi_left + v.roi_width - 1,
+                                    v.roi_top + v.roi_height - 1,
+                                    v.roi_width,
+                                    v.roi_height,
+                                ))
+                                .small()
+                                .color(egui::Color32::GRAY),
+                            );
                         }
                     });
                 ui.add_space(4.0);
@@ -215,37 +238,46 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
             egui::CollapsingHeader::new("Playback Controls")
                 .default_open(true)
                 .show(ui, |ui| {
-                    ui.label("Slice window (µs):");
-                    if ui.add(
-                        egui::Slider::new(&mut v.window_us, 1_000.0..=200_000.0)
-                            .step_by(1_000.0)
-                            .integer(),
-                    ).changed() {
-                        actions.slice_changed = true;
+                    ui.label(if v.is_camera {
+                        "Live replay"
+                    } else {
+                        "File playback"
+                    });
+                    let label = if v.playback_paused { "Play" } else { "Pause" };
+                    if ui.button(label).clicked() {
+                        v.playback_paused = !v.playback_paused;
+                        actions.pause_changed = true;
                     }
 
-                    if !v.is_camera {
-                        ui.add_space(4.0);
-                        let speed_opts = [
-                            ("×0.003", 0.003_f32), ("×0.01", 0.01), ("×0.1", 0.1),
-                            ("×0.5", 0.5), ("×1 (real-time)", 1.0), ("×2", 2.0), ("×3", 3.0),
-                        ];
-                        let cur = speed_opts.iter()
-                            .find(|(_, s)| (*s - v.playback_speed).abs() < 0.0001)
-                            .map(|(l, _)| *l).unwrap_or("Custom");
-                        egui::ComboBox::from_label("Speed")
-                            .selected_text(cur)
-                            .show_ui(ui, |ui| {
-                                for (label, speed) in speed_opts {
-                                    if ui.selectable_value(
-                                        &mut v.playback_speed, speed, label,
-                                    ).clicked() {
-                                        actions.speed_changed = true;
-                                    }
+                    ui.add_space(4.0);
+                    let speed_opts = [
+                        ("×0.001", 0.001_f32),
+                        ("×0.003", 0.003),
+                        ("×0.01", 0.01),
+                        ("×0.1", 0.1),
+                        ("×0.5", 0.5),
+                        ("×1", 1.0),
+                        ("×2", 2.0),
+                        ("×3", 3.0),
+                    ];
+                    let cur = speed_opts
+                        .iter()
+                        .find(|(_, s)| (*s - v.playback_speed).abs() < 0.0001)
+                        .map(|(l, _)| *l)
+                        .unwrap_or("Custom");
+                    egui::ComboBox::from_label("Speed")
+                        .selected_text(cur)
+                        .show_ui(ui, |ui| {
+                            for (label, speed) in speed_opts {
+                                if ui
+                                    .selectable_value(&mut v.playback_speed, speed, label)
+                                    .clicked()
+                                {
+                                    actions.speed_changed = true;
                                 }
-                            });
-                        ui.label(format!("FPS: {:.1}", v.render_fps));
-                    }
+                            }
+                        });
+                    ui.label(format!("FPS: {:.1}", v.render_fps));
                 });
 
             ui.add_space(4.0);
@@ -255,8 +287,12 @@ pub fn show_info_panel(ctx: &egui::Context, v: &mut ViewerState) -> PanelActions
                 .default_open(true)
                 .show(ui, |ui| {
                     let ra = show_recording_controls(ui, &v.recorder);
-                    if ra.start { actions.recording_start = true; }
-                    if ra.stop  { actions.recording_stop  = true; }
+                    if ra.start {
+                        actions.recording_start = true;
+                    }
+                    if ra.stop {
+                        actions.recording_stop = true;
+                    }
                 });
 
             ui.add_space(4.0);

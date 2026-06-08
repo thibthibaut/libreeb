@@ -1,7 +1,6 @@
 //! Recording state for capturing raw event bytes to file.
 
 use libreeb::io::header::RawFileHeader;
-use std::collections::HashMap;
 
 /// Recording state for capturing raw bytes to a .raw file.
 pub struct RecordingState {
@@ -34,8 +33,10 @@ impl RecordingState {
             let hour = date.get_hours() as u32;
             let minute = date.get_minutes() as u32;
             let second = date.get_seconds() as u32;
-            format!("recording-{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.raw",
-                year, month, day, hour, minute, second)
+            format!(
+                "recording-{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.raw",
+                year, month, day, hour, minute, second
+            )
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -49,7 +50,7 @@ impl RecordingState {
         self.buffer.clear();
         self.event_count = 0;
         self.start_timestamp = None;
-        
+
         // Write header to buffer
         self.write_header(header);
     }
@@ -64,12 +65,12 @@ impl RecordingState {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let date_str = "2026-05-05T00:00:00.000Z".to_string();
-        
+
         // Write date
         self.buffer.extend_from_slice(b"% Date ");
         self.buffer.extend_from_slice(date_str.as_bytes());
         self.buffer.push(b'\n');
-        
+
         // Write event type
         let event_type_str = match header.event_type {
             libreeb::io::header::RawEventType::Evt2 => "EVT2",
@@ -80,12 +81,12 @@ impl RecordingState {
         self.buffer.extend_from_slice(b"% evt ");
         self.buffer.extend_from_slice(event_type_str.as_bytes());
         self.buffer.push(b'\n');
-        
+
         // Write geometry
         let geo = &header.camera_geometry;
         let geo_str = format!("% geometry {}x{}\n", geo.width, geo.height);
         self.buffer.extend_from_slice(geo_str.as_bytes());
-        
+
         // Copy other header fields (excluding Date, evt, geometry to avoid duplicates)
         let skip_keys = ["Date", "date", "evt", "geometry", "format"];
         for (k, v) in &header.header_dict {
@@ -94,7 +95,7 @@ impl RecordingState {
                 self.buffer.extend_from_slice(line.as_bytes());
             }
         }
-        
+
         // No blank line needed - .raw format has event data immediately after last header field
     }
 
