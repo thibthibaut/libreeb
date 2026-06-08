@@ -28,6 +28,11 @@ pub trait Producer: Send + 'static {
     /// Set playback speed multiplier (file mode only).
     fn set_playback_speed(&mut self, speed: f32);
 
+    /// Pause or resume source playback.  Camera mode keeps capturing and this is a no-op.
+    fn set_paused(&mut self, paused: bool) {
+        let _ = paused;
+    }
+
     /// Stop the producer's async loop.
     fn stop(&mut self);
 

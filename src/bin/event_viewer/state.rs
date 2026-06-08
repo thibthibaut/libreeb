@@ -7,7 +7,10 @@ use crate::producers::Producer;
 use crate::recording::RecordingState;
 use crate::utils::{RateSample, TimeWindow};
 use eframe::egui;
-use libreeb::{processing::{FrameGenerator, TimeSurface}, EventBatch};
+use libreeb::{
+    processing::{FrameGenerator, TimeSurface},
+    EventBatch,
+};
 use std::sync::{Arc, Mutex};
 use web_time::Instant;
 
@@ -57,7 +60,7 @@ pub struct ViewerState {
     // ── Shared event buffer ───────────────────────────────────────────────────
     /// Sensor-time sliding window shared with the producer's async loop.
     /// The producer pushes batches; all rendering reads from this.
-    /// Caps: 2 s time window, 30 000 batch count.
+    /// Caps: 4 s time window, 30 000 batch count.
     pub event_buffer: Arc<Mutex<TimeWindow<EventBatch>>>,
 
     // ── Timing / stats ────────────────────────────────────────────────────────
@@ -75,7 +78,12 @@ pub struct ViewerState {
     // ── Playback (file mode) ──────────────────────────────────────────────────
     pub window_us: f32,
     pub playback_speed: f32,
-    pub playback_fps: f32,
+    pub playback_paused: bool,
+
+    /// Sensor timestamp currently used as the display playhead.
+    pub render_t: Option<u64>,
+    /// Wall-clock timestamp of the previous display-playhead update.
+    pub last_render_instant: Option<Instant>,
 
     // ── Canvas display ────────────────────────────────────────────────────────
     pub display_mode: DisplayMode,
@@ -90,6 +98,7 @@ pub struct ViewerState {
     pub time_surface: TimeSurface,
     pub ts_texture: Option<egui::TextureHandle>,
     pub ts_decay_us: u64,
+    pub ts_processed_t: u64,
 
     // ── XYT 3-D point cloud ───────────────────────────────────────────────────
     /// XYT renderer reads directly from `event_buffer` (no separate buffer).
