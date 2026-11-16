@@ -28,13 +28,15 @@ impl Timestamped for libreeb::EventBatch {
 /// One event-rate measurement anchored to a sensor timestamp.
 pub struct RateSample {
     /// Sensor time (µs) of the first event in the batch that produced this sample.
-    pub t:    u64,
+    pub t: u64,
     /// Events per second.
     pub rate: f64,
 }
 
 impl Timestamped for RateSample {
-    fn timestamp_us(&self) -> u64 { self.t }
+    fn timestamp_us(&self) -> u64 {
+        self.t
+    }
 }
 
 // ── TimeWindow ────────────────────────────────────────────────────────────────
@@ -54,9 +56,9 @@ impl Timestamped for RateSample {
 /// 4. **Count safeguard** — pop from the front while `len > count_cap`.
 ///    Items evicted by the count cap increment [`dropped_count`](TimeWindow::dropped_count).
 pub struct TimeWindow<T: Timestamped> {
-    items:         VecDeque<T>,
-    time_cap_us:   u64,
-    count_cap:     usize,
+    items: VecDeque<T>,
+    time_cap_us: u64,
+    count_cap: usize,
     /// Monotonically increasing count of items dropped by the count cap.
     dropped_count: u64,
 }
@@ -86,7 +88,12 @@ impl<T: Timestamped> TimeWindow<T> {
 
         // 3. Time eviction from front (oldest first).
         let cutoff = t.saturating_sub(self.time_cap_us);
-        while self.items.front().map(|e| e.timestamp_us() < cutoff).unwrap_or(false) {
+        while self
+            .items
+            .front()
+            .map(|e| e.timestamp_us() < cutoff)
+            .unwrap_or(false)
+        {
             self.items.pop_front();
         }
 
@@ -102,17 +109,31 @@ impl<T: Timestamped> TimeWindow<T> {
         self.items.iter()
     }
 
-    pub fn len(&self)      -> usize { self.items.len() }
-    pub fn is_empty(&self) -> bool  { self.items.is_empty() }
-    pub fn clear(&mut self)         { self.items.clear(); }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
 
     /// Total items evicted by the count cap since construction (monotonically increasing).
-    pub fn dropped_count(&self) -> u64 { self.dropped_count }
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped_count
+    }
 
     /// Sensor timestamp of the newest (most recently pushed) item.
-    pub fn newest_t(&self) -> Option<u64> { self.items.back().map(|e| e.timestamp_us()) }
+    pub fn newest_t(&self) -> Option<u64> {
+        self.items.back().map(|e| e.timestamp_us())
+    }
     /// Sensor timestamp of the oldest (front) item.
-    pub fn oldest_t(&self) -> Option<u64> { self.items.front().map(|e| e.timestamp_us()) }
+    pub fn oldest_t(&self) -> Option<u64> {
+        self.items.front().map(|e| e.timestamp_us())
+    }
     /// Reference to the newest item.
-    pub fn newest(&self)   -> Option<&T>  { self.items.back() }
+    pub fn newest(&self) -> Option<&T> {
+        self.items.back()
+    }
 }

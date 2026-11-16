@@ -36,22 +36,27 @@ const EVK4_PID: u16 = 0x00f5;
 const BULK_BUF_SIZE: u32 = 128 * 1024;
 
 // Treuzell protocol constants
-const TZ_WRITE_FLAG: u32         = 0x4000_0000;
-const TZ_PROP_DEVICES: u32       = 0x0001_0000;
-const TZ_PROP_DEVICE_REG32: u32  = 0x0001_0102;
+const TZ_WRITE_FLAG: u32 = 0x4000_0000;
+const TZ_PROP_DEVICES: u32 = 0x0001_0000;
+const TZ_PROP_DEVICE_REG32: u32 = 0x0001_0102;
 const TZ_PROP_DEVICE_STREAM: u32 = 0x0001_0200;
 
 // ── Sensor spec table ─────────────────────────────────────────────────────────
 
 pub struct SensorSpec {
-    pub name:   &'static str,
-    pub width:  u32,
+    pub name: &'static str,
+    pub width: u32,
     pub height: u32,
 }
 
-static SENSOR_TABLE: &[(u32, SensorSpec)] = &[
-    (0xA040_1806, SensorSpec { name: "IMX646", width: 1280, height: 720 }),
-];
+static SENSOR_TABLE: &[(u32, SensorSpec)] = &[(
+    0xA040_1806,
+    SensorSpec {
+        name: "IMX646",
+        width: 1280,
+        height: 720,
+    },
+)];
 
 const SENSOR_ID_ADDR: u32 = 0x0000_0014;
 
@@ -239,9 +244,9 @@ static SENSOR_EVT21_FORMAT: &[RegOp] = &[
 // USB descriptor addresses:  ctrl_out=0x02, ctrl_in=0x82, data_in=0x81
 // WebUSB endpoint number = address & 0x0F (direction is implied by the method)
 
-const EP_CTRL: u8 = 2;   // transferIn / transferOut endpoint 2 (Treuzell control)
-const EP_DATA: u8 = 1;   // transferIn endpoint 1 (EVT3 bulk stream)
-const IFACE:   u8 = 0;
+const EP_CTRL: u8 = 2; // transferIn / transferOut endpoint 2 (Treuzell control)
+const EP_DATA: u8 = 1; // transferIn endpoint 1 (EVT3 bulk stream)
+const IFACE: u8 = 0;
 
 // ── Treuzell async helpers ────────────────────────────────────────────────────
 
@@ -261,18 +266,16 @@ fn encode_tz(prop: u32, payload: &[u32]) -> Vec<u8> {
 
 /// Decode a Treuzell response: strip 2-word header, return payload u32s.
 fn decode_tz(bytes: &[u8]) -> Vec<u32> {
-    if bytes.len() < 8 { return vec![]; }
+    if bytes.len() < 8 {
+        return vec![];
+    }
     bytes[8..]
         .chunks_exact(4)
         .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
         .collect()
 }
 
-async fn tz_transfer(
-    device: &UsbDevice,
-    prop: u32,
-    payload: &[u32],
-) -> Result<Vec<u32>, JsValue> {
+async fn tz_transfer(device: &UsbDevice, prop: u32, payload: &[u32]) -> Result<Vec<u32>, JsValue> {
     let frame = encode_tz(prop, payload);
     let arr = Uint8Array::from(frame.as_slice());
 
@@ -280,21 +283,21 @@ async fn tz_transfer(
     JsFuture::from(device.transfer_out_with_u8_array(EP_CTRL, &arr)?).await?;
 
     // Read response
-    let result = JsFuture::from(
-        device.transfer_in(EP_CTRL, 1024)
-    ).await?;
+    let result = JsFuture::from(device.transfer_in(EP_CTRL, 1024)).await?;
     let transfer: web_sys::UsbInTransferResult = result.dyn_into()?;
-    let data = transfer.data()
+    let data = transfer
+        .data()
         .ok_or_else(|| JsValue::from_str("empty USB response"))?;
-    let bytes: Vec<u8> = (0..data.byte_length())
-        .map(|i| data.get_uint8(i))
-        .collect();
+    let bytes: Vec<u8> = (0..data.byte_length()).map(|i| data.get_uint8(i)).collect();
 
     // Check for Treuzell failure flag
     if bytes.len() >= 4 {
         let resp_prop = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
         if resp_prop & 0x8000_0000 != 0 {
-            return Err(JsValue::from_str(&format!("Treuzell error: prop={:#010x}", resp_prop)));
+            return Err(JsValue::from_str(&format!(
+                "Treuzell error: prop={:#010x}",
+                resp_prop
+            )));
         }
     }
 
@@ -304,12 +307,11 @@ async fn tz_transfer(
 async fn tz_read_reg(device: &UsbDevice, dev_id: u32, addr: u32) -> Result<u32, JsValue> {
     // Request payload: [dev_id, addr, nval=1]  (nval is required by Treuzell)
     // Response payload (after decode_tz strips header): [dev_id, addr, val]
-    let payload = tz_transfer(
-        device,
-        TZ_PROP_DEVICE_REG32,
-        &[dev_id, addr, 1],
-    ).await?;
-    payload.get(2).copied().ok_or_else(|| JsValue::from_str("reg read response too short"))
+    let payload = tz_transfer(device, TZ_PROP_DEVICE_REG32, &[dev_id, addr, 1]).await?;
+    payload
+        .get(2)
+        .copied()
+        .ok_or_else(|| JsValue::from_str("reg read response too short"))
 }
 
 async fn tz_write_reg(device: &UsbDevice, dev_id: u32, addr: u32, val: u32) -> Result<(), JsValue> {
@@ -317,7 +319,8 @@ async fn tz_write_reg(device: &UsbDevice, dev_id: u32, addr: u32, val: u32) -> R
         device,
         TZ_PROP_DEVICE_REG32 | TZ_WRITE_FLAG,
         &[dev_id, addr, val],
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -337,18 +340,16 @@ async fn run_seq(device: &UsbDevice, dev_id: u32, seq: &[RegOp]) -> Result<(), J
     for &op in seq {
         match op {
             Write(addr, val) => tz_write_reg(device, dev_id, addr, val).await?,
-            WriteField(addr, data, mask) =>
-                tz_write_reg_field(device, dev_id, addr, data, mask).await?,
+            WriteField(addr, data, mask) => {
+                tz_write_reg_field(device, dev_id, addr, data, mask).await?
+            }
             Delay(usec) => {
                 // In WASM we use a JS setTimeout-based sleep
                 let ms = (usec / 1000).max(1) as f64;
                 let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                     web_sys::window()
                         .unwrap()
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(
-                            &resolve,
-                            ms as i32,
-                        )
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
                         .unwrap();
                 });
                 JsFuture::from(promise).await?;
@@ -360,7 +361,8 @@ async fn run_seq(device: &UsbDevice, dev_id: u32, seq: &[RegOp]) -> Result<(), J
 
 async fn find_sensor(device: &UsbDevice) -> Result<(u32, u32, &'static SensorSpec), JsValue> {
     clog!("[libreeb] find_sensor: querying TZ_PROP_DEVICES");
-    let resp = tz_transfer(device, TZ_PROP_DEVICES, &[]).await
+    let resp = tz_transfer(device, TZ_PROP_DEVICES, &[])
+        .await
         .map_err(|e| {
             clog!("[libreeb] find_sensor: TZ_PROP_DEVICES failed: {:?}", e);
             e
@@ -377,21 +379,37 @@ async fn find_sensor(device: &UsbDevice) -> Result<(u32, u32, &'static SensorSpe
     let mut last_err: Option<String> = None;
 
     for dev_id in 0..count {
-        clog!("[libreeb] find_sensor: reading sensor ID register from device {}", dev_id);
+        clog!(
+            "[libreeb] find_sensor: reading sensor ID register from device {}",
+            dev_id
+        );
         match tz_read_reg(device, dev_id, SENSOR_ID_ADDR).await {
             Err(e) => {
                 let msg = format!("{:?}", e);
-                clog!("[libreeb] find_sensor: tz_read_reg dev={} FAILED: {}", dev_id, msg);
+                clog!(
+                    "[libreeb] find_sensor: tz_read_reg dev={} FAILED: {}",
+                    dev_id,
+                    msg
+                );
                 last_err = Some(msg);
             }
             Ok(id_val) => {
-                clog!("[libreeb] find_sensor: dev={} sensor_id = {:#010x}", dev_id, id_val);
+                clog!(
+                    "[libreeb] find_sensor: dev={} sensor_id = {:#010x}",
+                    dev_id,
+                    id_val
+                );
                 if let Some((_, spec)) = SENSOR_TABLE.iter().find(|(id, _)| *id == id_val) {
-                    clog!("[libreeb] find_sensor: matched sensor \"{}\" ({}x{})",
-                          spec.name, spec.width, spec.height);
+                    clog!(
+                        "[libreeb] find_sensor: matched sensor \"{}\" ({}x{})",
+                        spec.name,
+                        spec.width,
+                        spec.height
+                    );
                     return Ok((dev_id, id_val, spec));
                 }
-                let known: Vec<String> = SENSOR_TABLE.iter()
+                let known: Vec<String> = SENSOR_TABLE
+                    .iter()
                     .map(|(id, s)| format!("{:#010x} ({})", id, s.name))
                     .collect();
                 let msg = format!(
@@ -406,19 +424,22 @@ async fn find_sensor(device: &UsbDevice) -> Result<(u32, u32, &'static SensorSpe
     }
 
     let detail = last_err.unwrap_or_else(|| "no devices enumerated".to_string());
-    Err(JsValue::from_str(&format!("No known sensor found: {}", detail)))
+    Err(JsValue::from_str(&format!(
+        "No known sensor found: {}",
+        detail
+    )))
 }
 
 // ── Public camera struct ──────────────────────────────────────────────────────
 
 pub struct WasmCameraReader {
-    device:        UsbDevice,
-    dev_id:        u32,
-    pub spec:      &'static SensorSpec,
+    device: UsbDevice,
+    dev_id: u32,
+    pub spec: &'static SensorSpec,
     pub sensor_id: u32,
     pub bias_defaults: Vec<u8>,
     pub event_type: RawEventType,
-    decoder:       CameraDecoder,
+    decoder: CameraDecoder,
 }
 
 enum CameraDecoder {
@@ -430,7 +451,7 @@ impl CameraDecoder {
     fn new(event_type: RawEventType) -> Result<Self, JsValue> {
         match event_type {
             RawEventType::Evt21 => Ok(Self::Evt21(Evt21Decoder::new())),
-            RawEventType::Evt3  => Ok(Self::Evt3(Evt3Decoder::new())),
+            RawEventType::Evt3 => Ok(Self::Evt3(Evt3Decoder::new())),
             _ => Err(JsValue::from_str("live camera supports only EVT21 or EVT3")),
         }
     }
@@ -438,7 +459,7 @@ impl CameraDecoder {
     fn word_size(&self) -> usize {
         match self {
             Self::Evt21(_) => std::mem::size_of::<Evt21>(),
-            Self::Evt3(_)  => std::mem::size_of::<Evt3>(),
+            Self::Evt3(_) => std::mem::size_of::<Evt3>(),
         }
     }
 
@@ -461,7 +482,7 @@ impl CameraDecoder {
 fn sensor_format_sequence(event_type: RawEventType) -> Result<&'static [RegOp], JsValue> {
     match event_type {
         RawEventType::Evt21 => Ok(SENSOR_EVT21_FORMAT),
-        RawEventType::Evt3  => Ok(SENSOR_EVT3_FORMAT),
+        RawEventType::Evt3 => Ok(SENSOR_EVT3_FORMAT),
         _ => Err(JsValue::from_str("live camera supports only EVT21 or EVT3")),
     }
 }
@@ -475,7 +496,7 @@ impl WasmCameraReader {
 
         // Build filter: VID + PID
         let filter = Object::new();
-        Reflect::set(&filter, &"vendorId".into(),  &(EVK4_VID as u32).into())?;
+        Reflect::set(&filter, &"vendorId".into(), &(EVK4_VID as u32).into())?;
         Reflect::set(&filter, &"productId".into(), &(EVK4_PID as u32).into())?;
         let filters = Array::new();
         filters.push(&filter);
@@ -515,7 +536,8 @@ impl WasmCameraReader {
         let bias_defaults: Vec<u8> = {
             let mut defaults = Vec::new();
             for bi in BIAS_TABLE {
-                let v = tz_read_reg(&device, dev_id, bi.addr).await
+                let v = tz_read_reg(&device, dev_id, bi.addr)
+                    .await
                     .map(|r| (r & 0xFF) as u8)
                     .unwrap_or(128);
                 defaults.push(v);
@@ -534,9 +556,15 @@ impl WasmCameraReader {
         })
     }
 
-    pub fn width(&self)  -> u32 { self.spec.width }
-    pub fn height(&self) -> u32 { self.spec.height }
-    pub fn sensor_name(&self) -> &str { self.spec.name }
+    pub fn width(&self) -> u32 {
+        self.spec.width
+    }
+    pub fn height(&self) -> u32 {
+        self.spec.height
+    }
+    pub fn sensor_name(&self) -> &str {
+        self.spec.name
+    }
     pub fn bias_default(&self, index: usize) -> u8 {
         self.bias_defaults.get(index).copied().unwrap_or(128)
     }
@@ -546,29 +574,33 @@ impl WasmCameraReader {
     }
 
     /// Read a batch and also return the raw bytes (for recording).
-    /// 
+    ///
     /// Important: Only returns bytes that were actually decoded (aligned to word boundaries).
     /// This ensures recordings are always properly aligned and can be played back.
     pub async fn read_batch_with_bytes(&mut self) -> Option<(EventBatch, Vec<u8>)> {
-        let result = JsFuture::from(
-            self.device.transfer_in(EP_DATA, BULK_BUF_SIZE)
-        ).await.ok()?;
+        let result = JsFuture::from(self.device.transfer_in(EP_DATA, BULK_BUF_SIZE))
+            .await
+            .ok()?;
         let transfer: web_sys::UsbInTransferResult = result.dyn_into().ok()?;
         let data = transfer.data()?;
         let len = data.byte_length();
         let bytes: Vec<u8> = (0..len).map(|i| data.get_uint8(i)).collect();
-        if bytes.is_empty() { return None; }
+        if bytes.is_empty() {
+            return None;
+        }
 
         // Reinterpret raw bytes as the selected event format via bytemuck.
-        let word_size  = self.decoder.word_size();
+        let word_size = self.decoder.word_size();
         let word_count = bytes.len() / word_size;
-        if word_count == 0 { return None; }
-        
+        if word_count == 0 {
+            return None;
+        }
+
         // Calculate aligned byte count
         let aligned_byte_count = word_count * word_size;
         let batch = self.decoder.decode(&bytes[..aligned_byte_count]);
-        if batch.is_empty() { 
-            None 
+        if batch.is_empty() {
+            None
         } else {
             // Only return the bytes that were actually decoded (aligned)
             // This prevents misalignment issues in recordings
@@ -603,9 +635,9 @@ impl WasmCameraReader {
         x_max: u32,
         y_max: u32,
     ) -> Result<(), JsValue> {
-        let x_min = x_min.min(self.spec.width  - 1);
+        let x_min = x_min.min(self.spec.width - 1);
         let y_min = y_min.min(self.spec.height - 1);
-        let x_max = x_max.min(self.spec.width  - 1);
+        let x_max = x_max.min(self.spec.width - 1);
         let y_max = y_max.min(self.spec.height - 1);
 
         // 1. Write window coordinates (start inclusive, end inclusive).
@@ -630,7 +662,14 @@ impl WasmCameraReader {
         //    Set roi_td_en | roi_td_shadow_trigger | td_roi_roni_n_en | px_td_rstn.
         //    Use RMW (tz_write_reg_field) to preserve reserved-bit defaults.
         const ROI_CTRL_MASK: u32 = 0x0000_0462; // bits 1,5,6,10
-        tz_write_reg_field(&self.device, self.dev_id, 0x0004, ROI_CTRL_MASK, ROI_CTRL_MASK).await?;
+        tz_write_reg_field(
+            &self.device,
+            self.dev_id,
+            0x0004,
+            ROI_CTRL_MASK,
+            ROI_CTRL_MASK,
+        )
+        .await?;
 
         // 5. Clear roi_master_en and roi_win_done (OpenEB enable() does this after
         //    the window has been latched so the master_en pulse is not left high).
@@ -638,7 +677,10 @@ impl WasmCameraReader {
 
         clog!(
             "[libreeb] set_roi: ({},{})–({},{})",
-            x_min, y_min, x_max, y_max
+            x_min,
+            y_min,
+            x_max,
+            y_max
         );
         Ok(())
     }

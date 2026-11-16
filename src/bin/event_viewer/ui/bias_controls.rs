@@ -128,28 +128,27 @@ pub fn show_bias_controls(
                                         let abs_val = (factory as i32 + *offset).clamp(0, 255);
 
                                         // Name + absolute value row
-                                        ui.label(
-                                            egui::RichText::new(bi.name).monospace().small()
-                                        )
-                                        .on_hover_text(bi.hint);
+                                        ui.label(egui::RichText::new(bi.name).monospace().small())
+                                            .on_hover_text(bi.hint);
 
                                         ui.label(
                                             egui::RichText::new(format!("abs {}", abs_val))
                                                 .small()
-                                                .color(egui::Color32::DARK_GRAY)
+                                                .color(egui::Color32::DARK_GRAY),
                                         );
                                         ui.end_row();
 
                                         // Full-width slider on next row
                                         ui.scope(|_| {});
-                                        let resp = ui.add(
-                                            egui::Slider::new(offset, bi.rec_min..=bi.rec_max)
-                                                .step_by(1.0)
-                                                .integer()
-                                                .text("offset")
-                                        )
-                                        .on_hover_text(bi.hint);
-                                        
+                                        let resp = ui
+                                            .add(
+                                                egui::Slider::new(offset, bi.rec_min..=bi.rec_max)
+                                                    .step_by(1.0)
+                                                    .integer()
+                                                    .text("offset"),
+                                            )
+                                            .on_hover_text(bi.hint);
+
                                         if resp.changed() {
                                             changed = true;
                                         }

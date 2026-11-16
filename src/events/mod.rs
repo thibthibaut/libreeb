@@ -9,13 +9,13 @@
 //! The [`EventCollection`] trait provides a unified interface for collections
 //! that can be queried, iterated, and manipulated.
 
-mod types;
-mod soa;
 mod aos;
+mod soa;
+mod types;
 
-pub use types::{EventCD, Trigger};
-pub use soa::{EventSoA, EventBatch};
 pub use aos::EventAoS;
+pub use soa::{EventBatch, EventSoA};
+pub use types::{EventCD, Trigger};
 
 use crate::DecodeInto;
 
@@ -145,7 +145,7 @@ mod tests {
         let mut batch = EventSoA::new();
         batch.push(10, 20, 1000, 1);
         batch.push(15, 25, 2000, 0);
-        
+
         assert_eq!(batch.len(), 2);
         assert_eq!(batch.x[0], 10);
         assert_eq!(batch.t[1], 2000);
@@ -154,9 +154,19 @@ mod tests {
     #[test]
     fn test_event_aos_basic() {
         let mut batch = EventAoS::new();
-        batch.push(EventCD { x: 10, y: 20, p: 1, t: 1000 });
-        batch.push(EventCD { x: 15, y: 25, p: 0, t: 2000 });
-        
+        batch.push(EventCD {
+            x: 10,
+            y: 20,
+            p: 1,
+            t: 1000,
+        });
+        batch.push(EventCD {
+            x: 15,
+            y: 25,
+            p: 0,
+            t: 2000,
+        });
+
         assert_eq!(batch.len(), 2);
         assert_eq!(batch.events[0].x, 10);
         assert_eq!(batch.events[1].t, 2000);
@@ -167,7 +177,7 @@ mod tests {
         let mut batch = EventSoA::new();
         DecodeInto::push_cd(&mut batch, 10, 20, 1, 1000);
         DecodeInto::push_cd(&mut batch, 15, 25, 0, 2000);
-        
+
         assert_eq!(batch.len(), 2);
     }
 
@@ -176,7 +186,7 @@ mod tests {
         let mut batch = EventAoS::new();
         DecodeInto::push_cd(&mut batch, 10, 20, 1, 1000);
         DecodeInto::push_cd(&mut batch, 15, 25, 0, 2000);
-        
+
         assert_eq!(batch.len(), 2);
         assert_eq!(batch.events[0].x, 10);
     }

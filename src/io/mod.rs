@@ -9,8 +9,8 @@
 //! - [`camera_web`]: WebUSB camera interface (WASM only)
 //! - [`tee`]: Stream multiplexing/splitting utilities
 
-pub mod header;
 pub mod biases;
+pub mod header;
 pub mod reader;
 pub mod tee;
 
@@ -20,8 +20,8 @@ pub mod camera;
 #[cfg(target_arch = "wasm32")]
 pub mod camera_web;
 
+pub use header::{CameraGeometry, RawEventType, RawFileHeader};
 pub use reader::EventDecoder;
-pub use header::{RawFileHeader, RawEventType, CameraGeometry};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "camera"))]
 pub use camera::CameraReader;

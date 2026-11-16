@@ -27,9 +27,9 @@ pub enum RoiCommand {
 /// State shared between the UI thread and the camera async loop.
 pub struct WasmShared {
     pub pending_biases: Option<Vec<(usize, u8, i32)>>,
-    pub pending_roi:    Option<RoiCommand>,
-    pub stop:           bool,
-    pub recorder:       Option<Arc<Mutex<RecordingState>>>,
+    pub pending_roi: Option<RoiCommand>,
+    pub stop: bool,
+    pub recorder: Option<Arc<Mutex<RecordingState>>>,
 }
 
 pub struct WasmCameraProducer {
@@ -43,26 +43,26 @@ impl WasmCameraProducer {
     /// The async decode loop is spawned immediately; it pushes 5 ms [`EventBatch`]
     /// slices into `event_buffer` until `stop()` is called.
     pub fn new(
-        camera:         WasmCameraReader,
-        _geometry:      CameraGeometry,
-        event_buffer:   Arc<Mutex<TimeWindow<EventBatch>>>,
-        header:         RawFileHeader,
+        camera: WasmCameraReader,
+        _geometry: CameraGeometry,
+        event_buffer: Arc<Mutex<TimeWindow<EventBatch>>>,
+        header: RawFileHeader,
         initial_biases: Option<Vec<(usize, u8, i32)>>,
-        initial_roi:    Option<RoiCommand>,
+        initial_roi: Option<RoiCommand>,
     ) -> Self {
         let shared = Arc::new(Mutex::new(WasmShared {
             pending_biases: initial_biases,
-            pending_roi:    initial_roi,
-            stop:           false,
-            recorder:       None,
+            pending_roi: initial_roi,
+            stop: false,
+            recorder: None,
         }));
 
-        let shared_loop    = Arc::clone(&shared);
+        let shared_loop = Arc::clone(&shared);
         let event_buf_loop = Arc::clone(&event_buffer);
 
         spawn_local(async move {
             let mut camera = camera;
-            let mut acc    = EventBatch::new();
+            let mut acc = EventBatch::new();
             // Fixed 5 ms slice — window_us is a rendering-only parameter now.
             const SLICE_US: u64 = 5_000;
 
@@ -70,7 +70,7 @@ impl WasmCameraProducer {
                 let (stop, biases, roi_cmd) = {
                     match shared_loop.lock() {
                         Ok(mut s) => (s.stop, s.pending_biases.take(), s.pending_roi.take()),
-                        Err(_)    => break,
+                        Err(_) => break,
                     }
                 };
 
@@ -122,8 +122,8 @@ impl WasmCameraProducer {
                 }
 
                 // Emit accumulated batch once 5 ms of sensor time has elapsed.
-                let emit = acc.t.len() >= 2
-                    && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= SLICE_US;
+                let emit =
+                    acc.t.len() >= 2 && acc.t.last().unwrap().saturating_sub(acc.t[0]) >= SLICE_US;
 
                 if emit && !acc.is_empty() {
                     let batch = std::mem::replace(&mut acc, EventBatch::new());
@@ -146,9 +146,7 @@ impl Producer for WasmCameraProducer {
     fn set_roi(&mut self, roi: Option<[u32; 4]>) {
         if let Ok(mut g) = self.shared.lock() {
             g.pending_roi = Some(match roi {
-                Some([x_min, y_min, x_max, y_max]) => {
-                    RoiCommand::Set(x_min, y_min, x_max, y_max)
-                }
+                Some([x_min, y_min, x_max, y_max]) => RoiCommand::Set(x_min, y_min, x_max, y_max),
                 None => RoiCommand::Clear,
             });
         }

@@ -1,27 +1,11 @@
 /target
+/dist
+/result
 .aider*
 .env
-# Devenv
-.devenv*
-devenv.local.nix
-
-# direnv
-.direnv
-
-# pre-commit
-.pre-commit-config.yaml
-# Devenv
-.devenv*
-devenv.local.nix
-
-# direnv
-.direnv
-
-# pre-commit
-.pre-commit-config.yaml
-
 .cache*
 openeb/build
+perf.data*
 
 # Devenv
 .devenv*
@@ -31,9 +15,13 @@ devenv.local.yaml
 # direnv
 .direnv
 
-# dist
-/dist
-
 # pre-commit
 .pre-commit-config.yaml
-perf.data*
+
+# Tooling output
+/graphify-out
+/.opencode
+
+# Split recordings
+data/evt3/*_part_*.raw
+data/evt3/*.tmp_index

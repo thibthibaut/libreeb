@@ -165,13 +165,21 @@ impl<R: Read + Send + Sync, D: RawFormatDecoder, O: crate::events::EventCollecti
             // Need more data — refill the buffer
             if !self.refill() {
                 // EOF — return whatever we have (None = true end of stream)
-                return if output.is_empty() { None } else { Some(output) };
+                return if output.is_empty() {
+                    None
+                } else {
+                    Some(output)
+                };
             }
 
             // If after refill we still can't form a complete word, we're done
             let usable = self.buffer_len - self.buffer_cursor;
             if usable < word_size {
-                return if output.is_empty() { None } else { Some(output) };
+                return if output.is_empty() {
+                    None
+                } else {
+                    Some(output)
+                };
             }
         }
     }

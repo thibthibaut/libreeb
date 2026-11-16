@@ -13,17 +13,16 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use libreeb::{
-    io::header::CameraGeometry, 
-    processing::FrameGenerator, 
-    RawFileReader
-};
+use libreeb::{io::header::CameraGeometry, processing::FrameGenerator, RawFileReader};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{canvas::{Canvas, Points}, Block, Borders, Paragraph, Wrap},
+    widgets::{
+        canvas::{Canvas, Points},
+        Block, Borders, Paragraph, Wrap,
+    },
     Frame, Terminal,
 };
 use std::{
@@ -65,10 +64,10 @@ struct AppState {
     slice_duration: u64,
     filter: EventFilter,
     filename: String,
-    
+
     // Slicing state
     overflow: libreeb::EventBatch,
-    
+
     // State
     frame_count: u64,
     last_event_count: usize,
@@ -77,32 +76,37 @@ struct AppState {
     last_timestamp: Option<u64>,
     paused: bool,
     current_image: Option<image::RgbImage>,
-    
+
     // Timing
     start_time: Instant,
     last_frame_time: Instant,
 }
 
 impl AppState {
-    fn new(file_path: &Path, slice_duration: u64, filter: EventFilter) -> Result<Self, Box<dyn Error>> {
+    fn new(
+        file_path: &Path,
+        slice_duration: u64,
+        filter: EventFilter,
+    ) -> Result<Self, Box<dyn Error>> {
         let mut reader = RawFileReader::new(file_path)?;
-        
+
         // Scan geometry if needed
         if reader.needs_geometry_scan() {
             reader.scan_geometry(8);
         }
-        
+
         let geometry = CameraGeometry {
             width: reader.header.camera_geometry.width.max(1),
             height: reader.header.camera_geometry.height.max(1),
         };
-        
+
         let generator = FrameGenerator::new(geometry);
-        let filename = file_path.file_name()
+        let filename = file_path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        
+
         Ok(AppState {
             reader,
             generator,
@@ -121,16 +125,16 @@ impl AppState {
             last_frame_time: Instant::now(),
         })
     }
-    
+
     fn process_next_frame(&mut self) -> Result<bool, Box<dyn Error>> {
         if self.paused {
             return Ok(true);
         }
-        
+
         // Implement time-based slicing (same algorithm as SliceIter::Time)
         let mut acc = std::mem::take(&mut self.overflow);
         let mut need_reset = false;
-        
+
         // Ensure we have at least one event to anchor the window
         while acc.is_empty() {
             match self.reader.decoder().next() {
@@ -142,7 +146,7 @@ impl AppState {
                 }
             }
         }
-        
+
         if need_reset {
             self.reader.reset();
             self.frame_count = 0;
@@ -151,9 +155,9 @@ impl AppState {
             self.overflow = libreeb::EventBatch::new();
             return Ok(true); // Continue from start
         }
-        
+
         let end_t = acc.t[0] + self.slice_duration;
-        
+
         loop {
             // Binary search: timestamps are non-decreasing
             let split = acc.t.partition_point(|&t| t < end_t);
@@ -169,46 +173,46 @@ impl AppState {
                 }
             }
         }
-        
+
         if acc.is_empty() {
             return Ok(false);
         }
-        
+
         // Update statistics
         self.frame_count += 1;
         self.last_event_count = acc.len();
-        
+
         if acc.t.len() >= 2 {
             let dt_us = acc.t.last().unwrap().saturating_sub(acc.t[0]);
             if dt_us > 0 {
                 self.last_rate = acc.len() as f64 / (dt_us as f64 * 1e-6);
             }
         }
-        
+
         if self.first_timestamp.is_none() {
             self.first_timestamp = acc.t.first().copied();
         }
         self.last_timestamp = acc.t.last().copied();
-        
+
         // Generate frame
         let img = self.generator.generate(&acc);
         self.current_image = Some(img);
-        
+
         self.last_frame_time = Instant::now();
-        
+
         Ok(true)
     }
-    
+
     fn adjust_slice_duration(&mut self, delta: i64) {
         let new_duration = (self.slice_duration as i64 + delta).max(1).min(200_000) as u64;
         self.slice_duration = new_duration;
         // When slice duration changes, we let the next frame use the new duration naturally
     }
-    
+
     fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
-    
+
     fn fps(&self) -> f64 {
         if self.frame_count == 0 {
             return 0.0;
@@ -243,10 +247,10 @@ fn ui(f: &mut Frame, state: &AppState) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(20), Constraint::Length(35)])
         .split(f.area());
-    
+
     // Canvas area
     render_canvas(f, chunks[0], state);
-    
+
     // Sidebar
     render_sidebar(f, chunks[1], state);
 }
@@ -254,60 +258,60 @@ fn ui(f: &mut Frame, state: &AppState) {
 fn render_canvas(f: &mut Frame, area: Rect, state: &AppState) {
     let width = state.reader.header.camera_geometry.width as f64;
     let height = state.reader.header.camera_geometry.height as f64;
-    
+
     // Calculate available canvas space (account for borders)
     let canvas_width = (area.width.saturating_sub(2)) as f64;
     let canvas_height = (area.height.saturating_sub(2)) as f64 * 2.0; // Account for half-blocks
-    
+
     // Calculate scale to fit while preserving aspect ratio
     let scale_x = canvas_width / width;
     let scale_y = canvas_height / height;
     let scale = scale_x.min(scale_y);
-    
+
     // Calculate actual display dimensions
     let display_width = width * scale;
     let display_height = height * scale;
-    
+
     // Set canvas bounds to match display size exactly (no margins!)
     let x_bound = display_width / 2.0;
     let y_bound = display_height / 2.0;
-    
+
     // Pre-compute points outside the closure for much faster rendering.
     // Batching points into two draw calls (one per color) instead of
     // one draw call per pixel reduces overhead by ~1000x.
     let mut on_points: Vec<(f64, f64)> = Vec::new();
     let mut off_points: Vec<(f64, f64)> = Vec::new();
     let has_image = state.current_image.is_some();
-    
+
     if let Some(img) = &state.current_image {
         for y in 0..(height as usize) {
             for x in 0..(width as usize) {
                 let pixel = img.get_pixel(x as u32, y as u32);
-                
+
                 // Skip background: BACKGROUND is [30, 30, 46]
                 if pixel[0] < 50 && pixel[1] < 50 && pixel[2] < 50 {
                     continue;
                 }
-                
+
                 // Distinguish ON vs OFF by green channel
                 // POSITIVE has G=194, NEGATIVE has G=220
                 let is_on = pixel[1] < 200;
-                
+
                 // Apply filter
                 let show = match state.filter {
                     EventFilter::Both => true,
                     EventFilter::OnOnly => is_on,
                     EventFilter::OffOnly => !is_on,
                 };
-                
+
                 if !show {
                     continue;
                 }
-                
+
                 // Scale coordinates to fit display, centered at origin
                 let sx = (x as f64 * scale) - x_bound;
                 let sy = y_bound - (y as f64 * scale);
-                
+
                 if is_on {
                     on_points.push((sx, sy));
                 } else {
@@ -316,22 +320,26 @@ fn render_canvas(f: &mut Frame, area: Rect, state: &AppState) {
             }
         }
     }
-    
+
     let frame_count = state.frame_count;
     let filter = state.filter;
-    
+
     let canvas = Canvas::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" Event Viewer - Frame #{} ", frame_count))
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
         )
         .paint(move |ctx| {
             if !has_image {
                 return;
             }
-            
+
             // Draw all ON events in a single batched call
             match filter {
                 EventFilter::Both | EventFilter::OnOnly => {
@@ -344,7 +352,7 @@ fn render_canvas(f: &mut Frame, area: Rect, state: &AppState) {
                 }
                 _ => {}
             }
-            
+
             // Draw all OFF events in a single batched call
             match filter {
                 EventFilter::Both | EventFilter::OffOnly => {
@@ -361,7 +369,7 @@ fn render_canvas(f: &mut Frame, area: Rect, state: &AppState) {
         .x_bounds([-x_bound, x_bound])
         .y_bounds([-y_bound, y_bound])
         .marker(ratatui::symbols::Marker::Braille);
-    
+
     f.render_widget(canvas, area);
 }
 
@@ -375,35 +383,36 @@ fn render_sidebar(f: &mut Frame, area: Rect, state: &AppState) {
             Constraint::Length(4),  // Controls (increased from 3 to 4)
         ])
         .split(area);
-    
+
     // File info
     let file_info = vec![
-        Line::from(vec![
-            Span::styled("File Info", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "File Info",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::raw("File:    "),
-            Span::styled(
-                &state.filename,
-                Style::default().fg(Color::Cyan)
-            ),
+            Span::styled(&state.filename, Style::default().fg(Color::Cyan)),
         ]),
         Line::from(vec![
             Span::raw("Format:  "),
             Span::styled(
                 format!("{:?}", state.reader.header.event_type),
-                Style::default().fg(Color::Green)
+                Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
             Span::raw("Size:    "),
             Span::styled(
-                format!("{}×{}", 
+                format!(
+                    "{}×{}",
                     state.reader.header.camera_geometry.width,
                     state.reader.header.camera_geometry.height
                 ),
-                Style::default().fg(Color::Green)
+                Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
@@ -412,44 +421,71 @@ fn render_sidebar(f: &mut Frame, area: Rect, state: &AppState) {
         ]),
         Line::from(vec![
             Span::raw("Slice:   "),
-            Span::styled(format!("{} µs", state.slice_duration), Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("{} µs", state.slice_duration),
+                Style::default().fg(Color::Green),
+            ),
         ]),
     ];
-    
-    let file_block = Paragraph::new(file_info)
-        .block(Block::default().borders(Borders::ALL).title(" File "));
+
+    let file_block =
+        Paragraph::new(file_info).block(Block::default().borders(Borders::ALL).title(" File "));
     f.render_widget(file_block, chunks[0]);
-    
+
     // Stats
     let status = if state.paused { "PAUSED" } else { "Running" };
-    let status_color = if state.paused { Color::Yellow } else { Color::Green };
-    
+    let status_color = if state.paused {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
     let stats = vec![
-        Line::from(vec![
-            Span::styled("Stats", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Stats",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::raw("Status:  "),
-            Span::styled(status, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Frame:   "),
-            Span::styled(format!("#{}", state.frame_count), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("#{}", state.frame_count),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Rate:    "),
-            Span::styled(format_rate(state.last_rate), Style::default().fg(Color::Green)),
+            Span::styled(
+                format_rate(state.last_rate),
+                Style::default().fg(Color::Green),
+            ),
         ]),
         Line::from(vec![
             Span::raw("FPS:     "),
-            Span::styled(format!("{:.1}", state.fps()), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{:.1}", state.fps()),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Time:    "),
             Span::styled(
-                state.last_timestamp.map(format_timestamp).unwrap_or_else(|| "N/A".to_string()),
-                Style::default().fg(Color::Green)
+                state
+                    .last_timestamp
+                    .map(format_timestamp)
+                    .unwrap_or_else(|| "N/A".to_string()),
+                Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
@@ -460,17 +496,20 @@ fn render_sidebar(f: &mut Frame, area: Rect, state: &AppState) {
                 } else {
                     "N/A".to_string()
                 },
-                Style::default().fg(Color::Green)
+                Style::default().fg(Color::Green),
             ),
         ]),
     ];
-    
-    let stats_block = Paragraph::new(stats)
-        .block(Block::default().borders(Borders::ALL).title(" Stats "));
+
+    let stats_block =
+        Paragraph::new(stats).block(Block::default().borders(Borders::ALL).title(" Stats "));
     f.render_widget(stats_block, chunks[1]);
-    
+
     // Header
-    let header_lines: Vec<Line> = state.reader.header.header_dict
+    let header_lines: Vec<Line> = state
+        .reader
+        .header
+        .header_dict
         .iter()
         .take(10)
         .map(|(k, v)| {
@@ -480,18 +519,18 @@ fn render_sidebar(f: &mut Frame, area: Rect, state: &AppState) {
             ])
         })
         .collect();
-    
+
     let header_block = Paragraph::new(header_lines)
         .block(Block::default().borders(Borders::ALL).title(" Header "))
         .wrap(Wrap { trim: true });
     f.render_widget(header_block, chunks[2]);
-    
+
     // Controls
     let controls = vec![
         Line::from("q/ESC: Quit  Space: Pause"),
         Line::from("←/→: Adjust slice duration"),
     ];
-    
+
     let controls_block = Paragraph::new(controls)
         .block(Block::default().borders(Borders::ALL).title(" Controls "))
         .style(Style::default().fg(Color::DarkGray));
@@ -505,9 +544,9 @@ fn run_app(
     loop {
         // Measure frame start time for real-time playback
         let frame_start = Instant::now();
-        
+
         terminal.draw(|f| ui(f, &state))?;
-        
+
         // Check for key events (short poll so UI stays responsive)
         if event::poll(Duration::from_millis(5))? {
             if let Event::Key(key) = event::read()? {
@@ -530,17 +569,17 @@ fn run_app(
                 }
             }
         }
-        
+
         // Process next frame
         if !state.paused {
             state.process_next_frame()?;
         }
-        
+
         // Real-time playback: sleep for the remaining time after decoding.
         // slice_duration is in microseconds (µs), so convert to Duration.
         let slice_duration = Duration::from_micros(state.slice_duration);
         let elapsed = frame_start.elapsed();
-        
+
         if elapsed < slice_duration {
             std::thread::sleep(slice_duration - elapsed);
         }
@@ -550,7 +589,7 @@ fn run_app(
 
 fn parse_args() -> Result<(String, u64, EventFilter), String> {
     let args: Vec<String> = std::env::args().collect();
-    
+
     if args.len() < 2 {
         return Err(format!(
             "Usage: {} <file.raw> [--slice-duration <us>] [--filter <on|off|both>]\n\
@@ -562,11 +601,11 @@ fn parse_args() -> Result<(String, u64, EventFilter), String> {
             args[0]
         ));
     }
-    
+
     let filename = args[1].clone();
     let mut slice_duration = 33_333u64;
     let mut filter = EventFilter::Both;
-    
+
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -574,7 +613,8 @@ fn parse_args() -> Result<(String, u64, EventFilter), String> {
                 if i + 1 >= args.len() {
                     return Err("--slice-duration requires a value".to_string());
                 }
-                slice_duration = args[i + 1].parse()
+                slice_duration = args[i + 1]
+                    .parse()
                     .map_err(|e| format!("Invalid slice duration: {}", e))?;
                 i += 2;
             }
@@ -590,7 +630,7 @@ fn parse_args() -> Result<(String, u64, EventFilter), String> {
             }
         }
     }
-    
+
     Ok((filename, slice_duration, filter))
 }
 
@@ -603,20 +643,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             std::process::exit(1);
         }
     };
-    
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    
+
     // Create app state
     let state = AppState::new(Path::new(&filename), slice_duration, filter)?;
-    
+
     // Run app
     let res = run_app(&mut terminal, state);
-    
+
     // Restore terminal
     disable_raw_mode()?;
     execute!(
@@ -625,10 +665,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-    
+
     if let Err(err) = res {
         eprintln!("Error: {:?}", err);
     }
-    
+
     Ok(())
 }
