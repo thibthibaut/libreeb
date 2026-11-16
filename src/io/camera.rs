@@ -8,15 +8,15 @@
 
 use std::time::Duration;
 
+use crate::{biases::BIAS_TABLE, decoders::Evt3Decoder, io::reader::RawFormatDecoder, EventBatch};
 use anyhow::{bail, Context, Result};
 use rusb::{DeviceHandle, GlobalContext};
-use crate::{biases::BIAS_TABLE, decoders::Evt3Decoder, io::reader::RawFormatDecoder, EventBatch};
 
 // ── Treuzell protocol constants ───────────────────────────────────────────────
 
-const TZ_WRITE_FLAG: u32         = 0x4000_0000;
-const TZ_PROP_DEVICES: u32       = 0x0001_0000;
-const TZ_PROP_DEVICE_REG32: u32  = 0x0001_0102;
+const TZ_WRITE_FLAG: u32 = 0x4000_0000;
+const TZ_PROP_DEVICES: u32 = 0x0001_0000;
+const TZ_PROP_DEVICE_REG32: u32 = 0x0001_0102;
 const TZ_PROP_DEVICE_STREAM: u32 = 0x0001_0200;
 
 // ── EVK4 USB identifiers ──────────────────────────────────────────────────────
@@ -26,17 +26,17 @@ const EVK4_PID: u16 = 0x00f5;
 
 // ── USB transfer parameters ───────────────────────────────────────────────────
 
-const CTRL_TIMEOUT:    Duration = Duration::from_millis(1_000);
+const CTRL_TIMEOUT: Duration = Duration::from_millis(1_000);
 const CTRL_RX_TIMEOUT: Duration = Duration::from_millis(10_000);
-const DATA_TIMEOUT:    Duration = Duration::from_millis(100);
-const BULK_BUF_SIZE:   usize   = 128 * 1024;
+const DATA_TIMEOUT: Duration = Duration::from_millis(100);
+const BULK_BUF_SIZE: usize = 128 * 1024;
 
 // ── Sensor specification table ────────────────────────────────────────────────
 
 /// Static geometry and name for a known sensor model.
 pub struct SensorSpec {
-    pub name:   &'static str,
-    pub width:  u32,
+    pub name: &'static str,
+    pub width: u32,
     pub height: u32,
 }
 
@@ -44,7 +44,14 @@ pub struct SensorSpec {
 /// Extend this table when supporting additional sensors (IMX636, GenX320, …).
 static SENSOR_TABLE: &[(u32, SensorSpec)] = &[
     // IMX646 — EVK4, 1280×720 HD
-    (0xA040_1806, SensorSpec { name: "IMX646", width: 1280, height: 720 }),
+    (
+        0xA040_1806,
+        SensorSpec {
+            name: "IMX646",
+            width: 1280,
+            height: 720,
+        },
+    ),
 ];
 
 const SENSOR_ID_ADDR: u32 = 0x0000_0014;
@@ -55,8 +62,8 @@ const SENSOR_ID_ADDR: u32 = 0x0000_0014;
 #[derive(Clone)]
 pub struct CameraDeviceInfo {
     /// 0-based index among all EVK4 devices found.
-    pub index:   usize,
-    pub bus:     u8,
+    pub index: usize,
+    pub bus: u8,
     pub address: u8,
 }
 
@@ -72,7 +79,7 @@ pub fn list_cameras() -> Vec<CameraDeviceInfo> {
                 if desc.vendor_id() == EVK4_VID && desc.product_id() == EVK4_PID {
                     result.push(CameraDeviceInfo {
                         index,
-                        bus:     device.bus_number(),
+                        bus: device.bus_number(),
                         address: device.address(),
                     });
                     index += 1;
@@ -144,7 +151,7 @@ static ISSD_INIT: &[RegOp] = &[
     Write(0x0000_001C, 0x0000_0001),
     Delay(1_000_000), // 1 s
     Write(0x0040_0004, 0x0000_0001),
-    Delay(500_000),   // 500 ms
+    Delay(500_000), // 500 ms
     Write(0x0040_0004, 0x0000_0000),
     Delay(1_000_000), // 1 s
     Write(0x0000_B000, 0x0000_0158),
@@ -274,10 +281,10 @@ static SENSOR_EVT3_FORMAT: &[RegOp] = &[
 // ── Endpoint layout ───────────────────────────────────────────────────────────
 
 struct Endpoints {
-    ctrl_in:  u8,
+    ctrl_in: u8,
     ctrl_out: u8,
-    data_in:  u8,
-    iface:    u8,
+    data_in: u8,
+    iface: u8,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -290,14 +297,14 @@ struct Endpoints {
 /// Drop (or call `stop()`) to gracefully shut down: the camera is returned
 /// to its idle state and the USB interface is released.
 pub struct CameraReader {
-    handle:        DeviceHandle<GlobalContext>,
-    ep:            Endpoints,
-    dev_id:        u32,
-    spec:          &'static SensorSpec,
-    bias_defaults: Vec<u8>,   // factory idac_ctl for each BIAS_TABLE entry
-    decoder:       Evt3Decoder,
-    buf:           Vec<u8>,
-    stopped:       bool,
+    handle: DeviceHandle<GlobalContext>,
+    ep: Endpoints,
+    dev_id: u32,
+    spec: &'static SensorSpec,
+    bias_defaults: Vec<u8>, // factory idac_ctl for each BIAS_TABLE entry
+    decoder: Evt3Decoder,
+    buf: Vec<u8>,
+    stopped: bool,
 }
 
 impl CameraReader {
@@ -314,7 +321,10 @@ impl CameraReader {
         let (dev_id, spec) = find_sensor(&handle, &ep)?;
         eprintln!("camera: {} at Treuzell dev_id={}", spec.name, dev_id);
         let mut cam = CameraReader {
-            handle, ep, dev_id, spec,
+            handle,
+            ep,
+            dev_id,
+            spec,
             bias_defaults: Vec::new(),
             decoder: Evt3Decoder::new(),
             buf: vec![0u8; BULK_BUF_SIZE],
@@ -326,13 +336,19 @@ impl CameraReader {
     }
 
     /// Width of the sensor in pixels.
-    pub fn width(&self)  -> u32 { self.spec.width }
+    pub fn width(&self) -> u32 {
+        self.spec.width
+    }
 
     /// Height of the sensor in pixels.
-    pub fn height(&self) -> u32 { self.spec.height }
+    pub fn height(&self) -> u32 {
+        self.spec.height
+    }
 
     /// Human-readable sensor model name (e.g. `"IMX646"`).
-    pub fn sensor_name(&self) -> &str { self.spec.name }
+    pub fn sensor_name(&self) -> &str {
+        self.spec.name
+    }
 
     /// Factory-default `idac_ctl` byte for the bias at `BIAS_TABLE[index]`.
     ///
@@ -343,8 +359,13 @@ impl CameraReader {
 
     /// Read the raw `idac_ctl` byte (bits [7:0]) from a bias register.
     pub fn read_bias_raw(&self, addr: u32) -> Result<u8> {
-        let val = tz_read_reg(&self.handle, self.ep.ctrl_out, self.ep.ctrl_in,
-                              self.dev_id, addr)?;
+        let val = tz_read_reg(
+            &self.handle,
+            self.ep.ctrl_out,
+            self.ep.ctrl_in,
+            self.dev_id,
+            addr,
+        )?;
         Ok((val & 0xFF) as u8)
     }
 
@@ -357,14 +378,22 @@ impl CameraReader {
     pub fn write_bias(&self, addr: u32, factory: u8, offset: i32) -> Result<()> {
         let new_idac = (factory as i32 + offset).clamp(0, 255) as u32;
         let encoded = 0x11A1_0000u32 | new_idac;
-        tz_write_reg(&self.handle, self.ep.ctrl_out, self.ep.ctrl_in,
-                     self.dev_id, addr, encoded)
+        tz_write_reg(
+            &self.handle,
+            self.ep.ctrl_out,
+            self.ep.ctrl_in,
+            self.dev_id,
+            addr,
+            encoded,
+        )
     }
 
     /// Gracefully stop streaming: stream-off → ISSD stop → ISSD destroy →
     /// release interface. Safe to call multiple times.
     pub fn stop(&mut self) {
-        if self.stopped { return; }
+        if self.stopped {
+            return;
+        }
         self.stopped = true;
         if let Err(e) = stream_ctrl(&self.handle, &self.ep, self.dev_id, false) {
             eprintln!("camera: stream-off failed (non-fatal): {}", e);
@@ -385,12 +414,18 @@ impl CameraReader {
     /// Read and cache the factory-programmed idac_ctl for every BIAS_TABLE entry.
     /// Called once after `init()`.  Failures are non-fatal (defaults to 128).
     fn load_bias_defaults(&mut self) {
-        self.bias_defaults = BIAS_TABLE.iter().map(|bi| {
-            self.read_bias_raw(bi.addr).unwrap_or_else(|e| {
-                eprintln!("camera: could not read factory default for {} (non-fatal): {}", bi.name, e);
-                128
+        self.bias_defaults = BIAS_TABLE
+            .iter()
+            .map(|bi| {
+                self.read_bias_raw(bi.addr).unwrap_or_else(|e| {
+                    eprintln!(
+                        "camera: could not read factory default for {} (non-fatal): {}",
+                        bi.name, e
+                    );
+                    128
+                })
             })
-        }).collect();
+            .collect();
         eprintln!("camera: bias factory defaults: {:?}", self.bias_defaults);
     }
 
@@ -425,7 +460,10 @@ impl CameraReader {
         // two-device firmware. On single-device firmware (IMX646 only) the
         // device rejects it — ISSD start is sufficient in that case.
         if let Err(e) = stream_ctrl(&self.handle, &self.ep, self.dev_id, true) {
-            eprintln!("camera: stream-on not supported on sensor device (ISSD start is sufficient): {}", e);
+            eprintln!(
+                "camera: stream-on not supported on sensor device (ISSD start is sufficient): {}",
+                e
+            );
         }
         eprintln!("camera: streaming.");
         Ok(())
@@ -437,12 +475,17 @@ impl Iterator for CameraReader {
 
     fn next(&mut self) -> Option<EventBatch> {
         use crate::decoders::Evt3;
-        if self.stopped { return None; }
+        if self.stopped {
+            return None;
+        }
         loop {
-            let n = match self.handle.read_bulk(self.ep.data_in, &mut self.buf, DATA_TIMEOUT) {
-                Ok(0)                       => continue,
-                Ok(n)                       => n,
-                Err(rusb::Error::Timeout)   => continue,
+            let n = match self
+                .handle
+                .read_bulk(self.ep.data_in, &mut self.buf, DATA_TIMEOUT)
+            {
+                Ok(0) => continue,
+                Ok(n) => n,
+                Err(rusb::Error::Timeout) => continue,
                 Err(e) => {
                     eprintln!("camera: bulk read error: {}", e);
                     return None;
@@ -452,7 +495,9 @@ impl Iterator for CameraReader {
             // Trim to a multiple of the EVT3 word size (2 bytes).
             let word_size = std::mem::size_of::<Evt3>();
             let size = n - (n % word_size);
-            if size == 0 { continue; }
+            if size == 0 {
+                continue;
+            }
 
             let evts: &[Evt3] = bytemuck::cast_slice(&self.buf[..size]);
 
@@ -490,21 +535,27 @@ fn build_tz_frame(property: u32, payload: &[u32]) -> Vec<u8> {
 fn tz_transfer(
     handle: &DeviceHandle<GlobalContext>,
     ep_out: u8,
-    ep_in:  u8,
+    ep_in: u8,
     property: u32,
-    payload:  &[u32],
+    payload: &[u32],
 ) -> Result<Vec<u8>> {
     let frame = build_tz_frame(property, payload);
-    handle.write_bulk(ep_out, &frame, CTRL_TIMEOUT)
+    handle
+        .write_bulk(ep_out, &frame, CTRL_TIMEOUT)
         .with_context(|| format!("Treuzell TX prop={:#010x}", property))?;
 
     let mut buf = vec![0u8; 1024];
-    let n = handle.read_bulk(ep_in, &mut buf, CTRL_RX_TIMEOUT)
+    let n = handle
+        .read_bulk(ep_in, &mut buf, CTRL_RX_TIMEOUT)
         .with_context(|| format!("Treuzell RX prop={:#010x}", property))?;
     buf.truncate(n);
 
     if buf.len() < 8 {
-        bail!("Treuzell response too short ({} bytes) for prop={:#010x}", buf.len(), property);
+        bail!(
+            "Treuzell response too short ({} bytes) for prop={:#010x}",
+            buf.len(),
+            property
+        );
     }
     let resp_prop = u32::from_le_bytes(buf[0..4].try_into().unwrap());
     let resp_size = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
@@ -513,34 +564,55 @@ fn tz_transfer(
         bail!("Treuzell command failed: resp_prop={:#010x}", resp_prop);
     }
     if resp_prop != property {
-        bail!("Treuzell property mismatch: got {:#010x} expected {:#010x}", resp_prop, property);
+        bail!(
+            "Treuzell property mismatch: got {:#010x} expected {:#010x}",
+            resp_prop,
+            property
+        );
     }
     if buf.len() < 8 + resp_size {
-        bail!("Treuzell payload truncated ({} < {})", buf.len(), 8 + resp_size);
+        bail!(
+            "Treuzell payload truncated ({} < {})",
+            buf.len(),
+            8 + resp_size
+        );
     }
     Ok(buf[8..8 + resp_size].to_vec())
 }
 
 fn tz_write_reg(
     handle: &DeviceHandle<GlobalContext>,
-    ep_out: u8, ep_in: u8,
-    dev_id: u32, addr: u32, val: u32,
+    ep_out: u8,
+    ep_in: u8,
+    dev_id: u32,
+    addr: u32,
+    val: u32,
 ) -> Result<()> {
-    tz_transfer(handle, ep_out, ep_in,
+    tz_transfer(
+        handle,
+        ep_out,
+        ep_in,
         TZ_PROP_DEVICE_REG32 | TZ_WRITE_FLAG,
-        &[dev_id, addr, val])?;
+        &[dev_id, addr, val],
+    )?;
     Ok(())
 }
 
 fn tz_read_reg(
     handle: &DeviceHandle<GlobalContext>,
-    ep_out: u8, ep_in: u8,
-    dev_id: u32, addr: u32,
+    ep_out: u8,
+    ep_in: u8,
+    dev_id: u32,
+    addr: u32,
 ) -> Result<u32> {
     // Send: [dev_id, addr, nval=1]; Receive payload: [dev_id, addr, val]
-    let resp = tz_transfer(handle, ep_out, ep_in,
+    let resp = tz_transfer(
+        handle,
+        ep_out,
+        ep_in,
         TZ_PROP_DEVICE_REG32,
-        &[dev_id, addr, 1])?;
+        &[dev_id, addr, 1],
+    )?;
     if resp.len() < 12 {
         bail!("read_reg response payload too short ({} bytes)", resp.len());
     }
@@ -549,8 +621,12 @@ fn tz_read_reg(
 
 fn tz_write_reg_field(
     handle: &DeviceHandle<GlobalContext>,
-    ep_out: u8, ep_in: u8,
-    dev_id: u32, addr: u32, data: u32, mask: u32,
+    ep_out: u8,
+    ep_in: u8,
+    dev_id: u32,
+    addr: u32,
+    data: u32,
+    mask: u32,
 ) -> Result<()> {
     let current = tz_read_reg(handle, ep_out, ep_in, dev_id, addr)?;
     let new_val = (current & !mask) | (data & mask);
@@ -563,9 +639,13 @@ fn stream_ctrl(
     dev_id: u32,
     on: bool,
 ) -> Result<()> {
-    tz_transfer(handle, ep.ctrl_out, ep.ctrl_in,
+    tz_transfer(
+        handle,
+        ep.ctrl_out,
+        ep.ctrl_in,
         TZ_PROP_DEVICE_STREAM | TZ_WRITE_FLAG,
-        &[dev_id, on as u32])?;
+        &[dev_id, on as u32],
+    )?;
     Ok(())
 }
 
@@ -608,34 +688,45 @@ fn find_and_open_nth(n: usize) -> Result<(DeviceHandle<GlobalContext>, Endpoints
             continue;
         }
         // This is the n-th EVK4.
-        let handle = device.open()
+        let handle = device
+            .open()
             .context("Failed to open EVK4 USB device (check udev rules / permissions)")?;
-        let config = device.config_descriptor(0)
+        let config = device
+            .config_descriptor(0)
             .context("Failed to read EVK4 USB config descriptor")?;
         let ep = match find_treuzell_endpoints(&config) {
             Some(ep) => ep,
             None => bail!("EVK4 found but no Treuzell interface (3 bulk EPs) detected"),
         };
         if let Ok(true) = handle.kernel_driver_active(ep.iface) {
-            handle.detach_kernel_driver(ep.iface)
+            handle
+                .detach_kernel_driver(ep.iface)
                 .context("Failed to detach kernel driver from Treuzell interface")?;
             eprintln!("camera: detached kernel driver from interface {}", ep.iface);
         }
-        handle.claim_interface(ep.iface)
+        handle
+            .claim_interface(ep.iface)
             .context("Failed to claim Treuzell interface (camera busy?)")?;
         if let Err(e) = handle.set_alternate_setting(ep.iface, 0) {
             eprintln!("camera: set_alternate_setting skipped (non-fatal): {}", e);
         }
-        eprintln!("camera: claimed interface {} (ctrl_in={:#04x} ctrl_out={:#04x} data_in={:#04x})",
-            ep.iface, ep.ctrl_in, ep.ctrl_out, ep.data_in);
+        eprintln!(
+            "camera: claimed interface {} (ctrl_in={:#04x} ctrl_out={:#04x} data_in={:#04x})",
+            ep.iface, ep.ctrl_in, ep.ctrl_out, ep.data_in
+        );
         return Ok((handle, ep));
     }
-    bail!("EVK4 #{} not found (VID={:#06x} PID={:#06x})", n, EVK4_VID, EVK4_PID)
+    bail!(
+        "EVK4 #{} not found (VID={:#06x} PID={:#06x})",
+        n,
+        EVK4_VID,
+        EVK4_PID
+    )
 }
 
 fn find_sensor(
     handle: &DeviceHandle<GlobalContext>,
-    ep:     &Endpoints,
+    ep: &Endpoints,
 ) -> Result<(u32, &'static SensorSpec)> {
     let resp = tz_transfer(handle, ep.ctrl_out, ep.ctrl_in, TZ_PROP_DEVICES, &[])
         .context("TZ_PROP_DEVICES query failed")?;
@@ -659,24 +750,29 @@ fn find_treuzell_endpoints(config: &rusb::ConfigDescriptor) -> Option<Endpoints>
     for iface in config.interfaces() {
         for desc in iface.descriptors() {
             // Treuzell interface: class=0xFF (vendor), subclass=0x19, protocol=0x00
-            if desc.class_code()     != 0xFF
+            if desc.class_code() != 0xFF
                 || desc.sub_class_code() != 0x19
-                || desc.protocol_code()  != 0x00
-                || desc.num_endpoints()  != 3
+                || desc.protocol_code() != 0x00
+                || desc.num_endpoints() != 3
             {
                 continue;
             }
             let eps: Vec<_> = desc.endpoint_descriptors().collect();
-            if eps.len() != 3 { continue; }
-            if eps[0].transfer_type() == TransferType::Bulk && eps[0].direction() == Direction::In
-                && eps[1].transfer_type() == TransferType::Bulk && eps[1].direction() == Direction::Out
-                && eps[2].transfer_type() == TransferType::Bulk && eps[2].direction() == Direction::In
+            if eps.len() != 3 {
+                continue;
+            }
+            if eps[0].transfer_type() == TransferType::Bulk
+                && eps[0].direction() == Direction::In
+                && eps[1].transfer_type() == TransferType::Bulk
+                && eps[1].direction() == Direction::Out
+                && eps[2].transfer_type() == TransferType::Bulk
+                && eps[2].direction() == Direction::In
             {
                 return Some(Endpoints {
-                    ctrl_in:  eps[0].address(),
+                    ctrl_in: eps[0].address(),
                     ctrl_out: eps[1].address(),
-                    data_in:  eps[2].address(),
-                    iface:    desc.interface_number(),
+                    data_in: eps[2].address(),
+                    iface: desc.interface_number(),
                 });
             }
         }

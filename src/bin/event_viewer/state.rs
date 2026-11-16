@@ -100,6 +100,12 @@ pub struct ViewerState {
     pub ts_decay_us: u64,
     pub ts_processed_t: u64,
 
+    // ── 2-D frame/time-surface view ───────────────────────────────────────────
+    /// Zoom factor for Normal and Time Surface views (1.0 = fit to panel).
+    pub canvas_zoom: f32,
+    /// Pan offset in screen pixels for Normal and Time Surface views.
+    pub canvas_pan: egui::Vec2,
+
     // ── XYT 3-D point cloud ───────────────────────────────────────────────────
     /// XYT renderer reads directly from `event_buffer` (no separate buffer).
     pub xyt_azimuth: f32,

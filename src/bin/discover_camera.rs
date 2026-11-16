@@ -12,12 +12,12 @@ use std::time::Duration;
 const EVK4_VID: u16 = 0x04b4;
 const EVK4_PID: u16 = 0x00f5;
 
-const TZ_PROP_DEVICES: u32     = 0x0001_0000;
+const TZ_PROP_DEVICES: u32 = 0x0001_0000;
 const TZ_PROP_DEVICE_REG32: u32 = 0x0001_0102;
 
 const SENSOR_ID_ADDR: u32 = 0x0000_0014;
 
-const CTRL_TIMEOUT:    Duration = Duration::from_millis(1_000);
+const CTRL_TIMEOUT: Duration = Duration::from_millis(1_000);
 const CTRL_RX_TIMEOUT: Duration = Duration::from_millis(2_000);
 
 // ── Known sensor IDs (copy from camera.rs) ────────────────────────────────────
@@ -34,7 +34,10 @@ fn main() {
 
     let devices = match rusb::devices() {
         Ok(d) => d,
-        Err(e) => { eprintln!("Failed to enumerate USB devices: {e}"); return; }
+        Err(e) => {
+            eprintln!("Failed to enumerate USB devices: {e}");
+            return;
+        }
     };
 
     let mut evk4_count = 0usize;
@@ -47,8 +50,10 @@ fn main() {
         // Print every device briefly so we can spot the camera even with wrong IDs.
         println!(
             "USB {:03}:{:03}  VID={:#06x}  PID={:#06x}",
-            device.bus_number(), device.address(),
-            desc.vendor_id(), desc.product_id(),
+            device.bus_number(),
+            device.address(),
+            desc.vendor_id(),
+            desc.product_id(),
         );
 
         if desc.vendor_id() != EVK4_VID || desc.product_id() != EVK4_PID {
@@ -75,9 +80,15 @@ fn main() {
         for cfg_idx in 0..desc.num_configurations() {
             let config = match device.config_descriptor(cfg_idx) {
                 Ok(c) => c,
-                Err(e) => { println!("  [config {cfg_idx}] error: {e}"); continue; }
+                Err(e) => {
+                    println!("  [config {cfg_idx}] error: {e}");
+                    continue;
+                }
             };
-            println!("  Config {cfg_idx}: {} interface(s)", config.num_interfaces());
+            println!(
+                "  Config {cfg_idx}: {} interface(s)",
+                config.num_interfaces()
+            );
             for iface in config.interfaces() {
                 for alt in iface.descriptors() {
                     println!(
@@ -89,7 +100,10 @@ fn main() {
                     for ep in alt.endpoint_descriptors() {
                         println!(
                             "      EP {:#04x}  {:?}  {:?}  max_pkt={}",
-                            ep.address(), ep.transfer_type(), ep.direction(), ep.max_packet_size(),
+                            ep.address(),
+                            ep.transfer_type(),
+                            ep.direction(),
+                            ep.max_packet_size(),
                         );
                     }
                 }
@@ -115,11 +129,13 @@ fn main() {
 // ── Treuzell probe ────────────────────────────────────────────────────────────
 
 fn probe_treuzell(device: &rusb::Device<GlobalContext>) -> Result<()> {
-    let config = device.config_descriptor(0)
+    let config = device
+        .config_descriptor(0)
         .context("read config descriptor")?;
 
-    let ep = find_treuzell_endpoints(&config)
-        .context("no Treuzell interface found (expected class=0xFF sub=0x19 proto=0x00 with 3 bulk EPs)")?;
+    let ep = find_treuzell_endpoints(&config).context(
+        "no Treuzell interface found (expected class=0xFF sub=0x19 proto=0x00 with 3 bulk EPs)",
+    )?;
 
     println!(
         "  Treuzell interface {}: ctrl_in={:#04x}  ctrl_out={:#04x}  data_in={:#04x}",
@@ -130,15 +146,17 @@ fn probe_treuzell(device: &rusb::Device<GlobalContext>) -> Result<()> {
 
     match handle.kernel_driver_active(ep.iface) {
         Ok(true) => {
-            handle.detach_kernel_driver(ep.iface)
+            handle
+                .detach_kernel_driver(ep.iface)
                 .context("detach kernel driver")?;
             println!("  Detached kernel driver from interface {}", ep.iface);
         }
         Ok(false) => println!("  No kernel driver on interface {}", ep.iface),
-        Err(e)    => println!("  kernel_driver_active: {e} (non-fatal on macOS)"),
+        Err(e) => println!("  kernel_driver_active: {e} (non-fatal on macOS)"),
     }
 
-    handle.claim_interface(ep.iface)
+    handle
+        .claim_interface(ep.iface)
         .context("claim interface (camera busy?)")?;
     println!("  Interface {} claimed.", ep.iface);
 
@@ -177,7 +195,7 @@ fn probe_treuzell(device: &rusb::Device<GlobalContext>) -> Result<()> {
             ("version      ", 0x0000_000Cu32),
         ] {
             match tz_read_reg(&handle, ep.ctrl_out, ep.ctrl_in, dev_id, addr) {
-                Ok(v)  => println!("    reg {label} @ {addr:#010x} = {v:#010x}"),
+                Ok(v) => println!("    reg {label} @ {addr:#010x} = {v:#010x}"),
                 Err(e) => println!("    reg {label} @ {addr:#010x} = ERROR: {e}"),
             }
         }
@@ -188,27 +206,39 @@ fn probe_treuzell(device: &rusb::Device<GlobalContext>) -> Result<()> {
 
 // ── Treuzell helpers (minimal copies from camera.rs) ─────────────────────────
 
-struct Endpoints { ctrl_in: u8, ctrl_out: u8, data_in: u8, iface: u8 }
+struct Endpoints {
+    ctrl_in: u8,
+    ctrl_out: u8,
+    data_in: u8,
+    iface: u8,
+}
 
 fn find_treuzell_endpoints(config: &rusb::ConfigDescriptor) -> Option<Endpoints> {
     for iface in config.interfaces() {
         for desc in iface.descriptors() {
-            if desc.class_code()     != 0xFF
+            if desc.class_code() != 0xFF
                 || desc.sub_class_code() != 0x19
-                || desc.protocol_code()  != 0x00
-                || desc.num_endpoints()  != 3
-            { continue; }
+                || desc.protocol_code() != 0x00
+                || desc.num_endpoints() != 3
+            {
+                continue;
+            }
             let eps: Vec<_> = desc.endpoint_descriptors().collect();
-            if eps.len() != 3 { continue; }
-            if eps[0].transfer_type() == TransferType::Bulk && eps[0].direction() == Direction::In
-                && eps[1].transfer_type() == TransferType::Bulk && eps[1].direction() == Direction::Out
-                && eps[2].transfer_type() == TransferType::Bulk && eps[2].direction() == Direction::In
+            if eps.len() != 3 {
+                continue;
+            }
+            if eps[0].transfer_type() == TransferType::Bulk
+                && eps[0].direction() == Direction::In
+                && eps[1].transfer_type() == TransferType::Bulk
+                && eps[1].direction() == Direction::Out
+                && eps[2].transfer_type() == TransferType::Bulk
+                && eps[2].direction() == Direction::In
             {
                 return Some(Endpoints {
-                    ctrl_in:  eps[0].address(),
+                    ctrl_in: eps[0].address(),
                     ctrl_out: eps[1].address(),
-                    data_in:  eps[2].address(),
-                    iface:    desc.interface_number(),
+                    data_in: eps[2].address(),
+                    iface: desc.interface_number(),
                 });
             }
         }
@@ -221,28 +251,35 @@ fn build_tz_frame(property: u32, payload: &[u32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8 + size as usize);
     buf.extend_from_slice(&property.to_le_bytes());
     buf.extend_from_slice(&size.to_le_bytes());
-    for &w in payload { buf.extend_from_slice(&w.to_le_bytes()); }
+    for &w in payload {
+        buf.extend_from_slice(&w.to_le_bytes());
+    }
     buf
 }
 
 fn tz_transfer(
-    handle:   &DeviceHandle<GlobalContext>,
-    ep_out:   u8,
-    ep_in:    u8,
+    handle: &DeviceHandle<GlobalContext>,
+    ep_out: u8,
+    ep_in: u8,
     property: u32,
-    payload:  &[u32],
+    payload: &[u32],
 ) -> Result<Vec<u8>> {
     let frame = build_tz_frame(property, payload);
-    handle.write_bulk(ep_out, &frame, CTRL_TIMEOUT)
+    handle
+        .write_bulk(ep_out, &frame, CTRL_TIMEOUT)
         .with_context(|| format!("Treuzell TX prop={property:#010x}"))?;
 
     let mut buf = vec![0u8; 1024];
-    let n = handle.read_bulk(ep_in, &mut buf, CTRL_RX_TIMEOUT)
+    let n = handle
+        .read_bulk(ep_in, &mut buf, CTRL_RX_TIMEOUT)
         .with_context(|| format!("Treuzell RX prop={property:#010x}"))?;
     buf.truncate(n);
 
     if buf.len() < 8 {
-        bail!("response too short ({} bytes) for prop={property:#010x}", buf.len());
+        bail!(
+            "response too short ({} bytes) for prop={property:#010x}",
+            buf.len()
+        );
     }
     let resp_prop = u32::from_le_bytes(buf[0..4].try_into().unwrap());
     let resp_size = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
@@ -261,11 +298,18 @@ fn tz_transfer(
 
 fn tz_read_reg(
     handle: &DeviceHandle<GlobalContext>,
-    ep_out: u8, ep_in: u8,
-    dev_id: u32, addr: u32,
+    ep_out: u8,
+    ep_in: u8,
+    dev_id: u32,
+    addr: u32,
 ) -> Result<u32> {
-    let resp = tz_transfer(handle, ep_out, ep_in,
-        TZ_PROP_DEVICE_REG32, &[dev_id, addr, 1])?;
+    let resp = tz_transfer(
+        handle,
+        ep_out,
+        ep_in,
+        TZ_PROP_DEVICE_REG32,
+        &[dev_id, addr, 1],
+    )?;
     if resp.len() < 12 {
         bail!("read_reg payload too short ({} bytes)", resp.len());
     }

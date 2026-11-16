@@ -744,6 +744,9 @@ fn new_viewer_state(
         ts_decay_us: 30_000,
         ts_processed_t: 0,
 
+        canvas_zoom: 1.0,
+        canvas_pan: egui::Vec2::ZERO,
+
         xyt_azimuth: 45.0,
         xyt_elevation: 30.0,
         xyt_point_size: 1.5,

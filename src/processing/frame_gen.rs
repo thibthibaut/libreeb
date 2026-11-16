@@ -68,7 +68,10 @@ mod tests {
 
     #[test]
     fn empty_batch_is_background() {
-        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 8 });
+        let gen = FrameGenerator::new(CameraGeometry {
+            width: 10,
+            height: 8,
+        });
         let frame = gen.generate(&EventBatch::new());
         assert_eq!(frame.dimensions(), (10, 8));
         for pixel in frame.pixels() {
@@ -78,13 +81,19 @@ mod tests {
 
     #[test]
     fn frame_dimensions_match_constructor() {
-        let gen = FrameGenerator::new(CameraGeometry { width: 320, height: 240 });
+        let gen = FrameGenerator::new(CameraGeometry {
+            width: 320,
+            height: 240,
+        });
         assert_eq!(gen.generate(&EventBatch::new()).dimensions(), (320, 240));
     }
 
     #[test]
     fn positive_event_paints_orange() {
-        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
+        let gen = FrameGenerator::new(CameraGeometry {
+            width: 10,
+            height: 10,
+        });
         let mut batch = EventBatch::new();
         batch.push(5, 3, 0, 1);
         let frame = gen.generate(&batch);
@@ -94,7 +103,10 @@ mod tests {
 
     #[test]
     fn negative_event_paints_cyan() {
-        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
+        let gen = FrameGenerator::new(CameraGeometry {
+            width: 10,
+            height: 10,
+        });
         let mut batch = EventBatch::new();
         batch.push(2, 7, 0, 0);
         let frame = gen.generate(&batch);
@@ -103,7 +115,10 @@ mod tests {
 
     #[test]
     fn last_event_wins_on_same_pixel() {
-        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
+        let gen = FrameGenerator::new(CameraGeometry {
+            width: 10,
+            height: 10,
+        });
         let mut batch = EventBatch::new();
         batch.push(5, 5, 0, 1); // positive first
         batch.push(5, 5, 1, 0); // negative last → wins
@@ -113,7 +128,10 @@ mod tests {
 
     #[test]
     fn out_of_bounds_events_are_ignored() {
-        let gen = FrameGenerator::new(CameraGeometry { width: 10, height: 10 });
+        let gen = FrameGenerator::new(CameraGeometry {
+            width: 10,
+            height: 10,
+        });
         let mut batch = EventBatch::new();
         batch.push(10, 0, 0, 1);
         batch.push(0, 10, 0, 1);

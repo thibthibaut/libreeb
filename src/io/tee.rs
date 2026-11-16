@@ -32,7 +32,7 @@ impl<R: Read> TeeReader<R> {
 impl<R: Read> Read for TeeReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = self.inner.read(buf)?;
-        
+
         // Copy read bytes to recorder if active
         if n > 0 {
             if let Some(ref rec) = self.recorder {
@@ -41,7 +41,7 @@ impl<R: Read> Read for TeeReader<R> {
                 }
             }
         }
-        
+
         Ok(n)
     }
 }

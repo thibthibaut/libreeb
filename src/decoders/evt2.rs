@@ -59,7 +59,7 @@ impl RawFormatDecoder for Evt2Decoder {
         max_events: usize,
     ) -> usize {
         let mut decoded_count = 0usize;
-        
+
         for (idx, evt) in raw_events.iter().enumerate() {
             if decoded_count >= max_events {
                 return idx;

@@ -276,8 +276,7 @@ impl Evt3Decoder {
         }
 
         let prev = self.time_base;
-        let mut new_t =
-            (event_time << 12) + self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
+        let mut new_t = (event_time << 12) + self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
 
         // Handle timestamp wrapping
         if prev > new_t && prev - new_t >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD {

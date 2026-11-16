@@ -14,19 +14,19 @@ use std::{
 // ── Public API ───────────────────────────────────────────────────────────────
 
 // Core modules
-pub mod events;
 pub mod decoders;
+pub mod events;
 pub mod io;
 pub mod processing;
 
 // Re-export event types
-pub use events::{EventCD, EventSoA, EventAoS, EventBatch, EventCollection, Trigger};
+pub use events::{EventAoS, EventBatch, EventCD, EventCollection, EventSoA, Trigger};
 
 // Re-export decoders
 pub use decoders::{Evt2, Evt21, Evt3};
 
 // Re-export I/O types
-pub use io::{EventDecoder, RawEventType, RawFileHeader, CameraGeometry};
+pub use io::{CameraGeometry, EventDecoder, RawEventType, RawFileHeader};
 
 // Re-export processing
 pub use processing::FrameGenerator;
@@ -315,7 +315,7 @@ pub fn make_decoder_generic<
     reader: BufReader<R>,
     event_type: RawEventType,
 ) -> Result<EventDecoder<O>, RawFileReaderError> {
-    use decoders::{Evt2Decoder, Evt21Decoder, Evt3Decoder};
+    use decoders::{Evt21Decoder, Evt2Decoder, Evt3Decoder};
     use io::reader::RawFormatDecoder;
 
     let stream: Box<dyn io::reader::DecoderStream<O>> = match event_type {
@@ -409,7 +409,7 @@ impl RawFileReader {
     pub fn reset(&mut self) {
         // Preserve scanned geometry across resets
         let scanned_geometry = self.header.camera_geometry;
-        
+
         if let Ok(mut fresh) = Self::new(&self.path) {
             // Restore scanned geometry if it was non-zero
             if scanned_geometry.width > 0 || scanned_geometry.height > 0 {

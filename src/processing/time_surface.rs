@@ -56,11 +56,7 @@ impl TimeSurface {
     /// * `decay_us` – decay time constant in µs; smaller = faster fade.
     pub fn render(&self, current_time: u64, decay_us: u64) -> RgbImage {
         let decay = decay_us as f32;
-        let mut img = RgbImage::from_pixel(
-            self.width,
-            self.height,
-            image::Rgb(BACKGROUND),
-        );
+        let mut img = RgbImage::from_pixel(self.width, self.height, image::Rgb(BACKGROUND));
         for y in 0..self.height {
             for x in 0..self.width {
                 let ts = self.timestamps[(y * self.width + x) as usize];
@@ -151,7 +147,11 @@ mod tests {
         let img = ts.render(10_000_000, 30_000);
         let p = img.get_pixel(2, 2).0;
         // jet(≈0) → blue channel dominant
-        assert!(p[2] > p[0], "expected blue dominant for stale event, got {:?}", p);
+        assert!(
+            p[2] > p[0],
+            "expected blue dominant for stale event, got {:?}",
+            p
+        );
     }
 
     #[test]
