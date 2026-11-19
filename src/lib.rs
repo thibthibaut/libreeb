@@ -321,6 +321,7 @@ pub fn make_decoder_generic<
     let stream: Box<dyn io::reader::DecoderStream<O>> = match event_type {
         RawEventType::Evt2 => Box::new(BufferedDecoder::new(reader, Evt2Decoder::new())),
         RawEventType::Evt21 => Box::new(BufferedDecoder::new(reader, Evt21Decoder::new())),
+        RawEventType::Evt21Legacy => Box::new(BufferedDecoder::new(reader, Evt21Decoder::legacy())),
         RawEventType::Evt3 => Box::new(BufferedDecoder::new(reader, Evt3Decoder::new())),
         _ => return Err(RawFileReaderError::DecoderNotImplemented(event_type)),
     };

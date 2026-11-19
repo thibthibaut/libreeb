@@ -20,6 +20,8 @@ use crate::RawFileReaderError;
 pub enum RawEventType {
     Evt2,
     Evt21,
+    /// EVT2.1 with 32-bit halves swapped (`endianness=legacy`, IMX636/EVK4).
+    Evt21Legacy,
     Evt3,
     Evt4,
 }
@@ -50,6 +52,7 @@ pub fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileR
     let mut event_format_string: Option<String> = None;
     let mut cam_width: u32 = 0;
     let mut cam_height: u32 = 0;
+    let mut endianness: Option<String> = None;
 
     loop {
         let buffer = reader
@@ -73,6 +76,7 @@ pub fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileR
             match key {
                 "evt" => event_type_string = Some(value.to_string()),
                 "format" => event_format_string = Some(value.to_string()),
+                "endianness" => endianness = Some(value.trim().to_string()),
                 "geometry" => {
                     if let Some((w, h)) = value.trim().split_once('x') {
                         if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
@@ -102,6 +106,9 @@ pub fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileR
                 cam_width = v.trim().parse().unwrap_or(cam_width);
             } else if let Some(v) = segment.strip_prefix("height=") {
                 cam_height = v.trim().parse().unwrap_or(cam_height);
+            } else if let Some(v) = segment.strip_prefix("endianness=") {
+                // As in OpenEB, the format field wins over the `endianness` key.
+                endianness = Some(v.trim().to_string());
             }
         }
         fmt = base;
@@ -109,6 +116,9 @@ pub fn parse_header(reader: &mut impl BufRead) -> Result<RawFileHeader, RawFileR
 
     let event_type = match fmt.trim().to_uppercase().as_str() {
         "EVT2" | "2.0" => RawEventType::Evt2,
+        "EVT21" | "EVT2.1" | "2.1" if endianness.as_deref() == Some("legacy") => {
+            RawEventType::Evt21Legacy
+        }
         "EVT21" | "EVT2.1" | "2.1" => RawEventType::Evt21,
         "EVT3" | "3.0" => RawEventType::Evt3,
         "EVT4" | "4.0" => RawEventType::Evt4,
@@ -179,6 +189,27 @@ mod tests {
         }
         assert_eq!(header.camera_geometry.width, 320);
         assert_eq!(header.camera_geometry.height, 320);
+    }
+
+    #[test]
+    fn parse_evt21_endianness() {
+        let parse = |text: &str| {
+            parse_header(&mut Cursor::new(text.as_bytes()))
+                .unwrap()
+                .event_type
+        };
+        assert_eq!(
+            parse("% format EVT21;height=720;width=1280;endianness=legacy\n"),
+            RawEventType::Evt21Legacy
+        );
+        assert_eq!(
+            parse("% evt 2.1\n% endianness legacy\n"),
+            RawEventType::Evt21Legacy
+        );
+        assert_eq!(
+            parse("% format EVT21\n% endianness little\n"),
+            RawEventType::Evt21
+        );
     }
 
     #[test]

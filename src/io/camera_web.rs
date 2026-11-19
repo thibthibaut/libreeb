@@ -238,7 +238,8 @@ static SENSOR_EVT3_FORMAT: &[RegOp] = &[
 ];
 
 static SENSOR_EVT21_FORMAT: &[RegOp] = &[
-    // OpenEB TzImx646::set_output_format("EVT21").
+    // OpenEB TzImx636/TzImx646::set_output_format("EVT21"). The sensor then
+    // streams the `legacy` EVT2.1 layout (32-bit halves swapped).
     WriteField(0x0000_7000, 0x0000_0002, 0x0000_0002),
     WriteField(0x0000_8000, 0x0000_0000, 0x0000_00C0),
 ];
@@ -457,7 +458,7 @@ enum CameraDecoder {
 impl CameraDecoder {
     fn new(event_type: RawEventType) -> Result<Self, JsValue> {
         match event_type {
-            RawEventType::Evt21 => Ok(Self::Evt21(Evt21Decoder::new())),
+            RawEventType::Evt21Legacy => Ok(Self::Evt21(Evt21Decoder::legacy())),
             RawEventType::Evt3 => Ok(Self::Evt3(Evt3Decoder::new())),
             _ => Err(JsValue::from_str("live camera supports only EVT21 or EVT3")),
         }
@@ -488,7 +489,7 @@ impl CameraDecoder {
 
 fn sensor_format_sequence(event_type: RawEventType) -> Result<&'static [RegOp], JsValue> {
     match event_type {
-        RawEventType::Evt21 => Ok(SENSOR_EVT21_FORMAT),
+        RawEventType::Evt21 | RawEventType::Evt21Legacy => Ok(SENSOR_EVT21_FORMAT),
         RawEventType::Evt3 => Ok(SENSOR_EVT3_FORMAT),
         _ => Err(JsValue::from_str("live camera supports only EVT21 or EVT3")),
     }
@@ -498,6 +499,11 @@ impl WasmCameraReader {
     /// Show the browser's USB device picker, then open + initialise the EVK4.
     /// Must be called from a user-gesture context (button click, etc.).
     pub async fn open(event_type: RawEventType) -> Result<Self, JsValue> {
+        // IMX636 EVT2.1 always uses the legacy word layout (as in OpenEB).
+        let event_type = match event_type {
+            RawEventType::Evt21 => RawEventType::Evt21Legacy,
+            other => other,
+        };
         let window = web_sys::window().ok_or("no window")?;
         let usb = window.navigator().usb();
 

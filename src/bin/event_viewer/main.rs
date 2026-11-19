@@ -644,7 +644,7 @@ async fn open_camera_wasm_async(event_type: RawEventType) -> Result<ViewerState,
 
     let header = RawFileHeader {
         header_dict: std::collections::HashMap::new(),
-        event_type,
+        event_type: camera.event_type,
         camera_geometry: geometry,
     };
 
@@ -688,7 +688,7 @@ async fn open_camera_wasm_async(event_type: RawEventType) -> Result<ViewerState,
 #[cfg(target_arch = "wasm32")]
 fn event_type_label(event_type: RawEventType) -> &'static str {
     match event_type {
-        RawEventType::Evt21 => "EVT21",
+        RawEventType::Evt21 | RawEventType::Evt21Legacy => "EVT21",
         RawEventType::Evt3 => "EVT3",
         RawEventType::Evt2 => "EVT2",
         RawEventType::Evt4 => "EVT4",

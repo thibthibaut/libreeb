@@ -2,6 +2,12 @@
 //!
 //! EVT2.1 is an improved version of EVT2 with mask-based event encoding.
 //! Specification: https://docs.prophesee.ai/stable/data/encoding_formats/evt21.html
+//!
+//! Two word layouts exist (OpenEB `endianness` format option):
+//! - `little`: the 64-bit word is little-endian, fields as in the spec.
+//! - `legacy`: the two 32-bit halves are swapped (bits 31..0 hold the type,
+//!   timestamp, x and y; bits 63..32 hold the valid mask). IMX636/EVK4 sensors
+//!   emit this layout, since they send the high 32-bit half first.
 
 use crate::io::reader::RawFormatDecoder;
 use crate::{declare_raw_evt, DecodeInto};
@@ -26,6 +32,8 @@ const EXT_TRIGGER: u8 = 0xA;
 
 #[derive(Default)]
 pub struct Evt21Decoder {
+    /// Words use the `legacy` layout (32-bit halves swapped).
+    legacy: bool,
     time_high: u64,
     has_time_high: bool,
     // Carry state for partial mask emission (when count budget splits a word)
@@ -34,6 +42,26 @@ pub struct Evt21Decoder {
     carry_y: u16,
     carry_p: u8,
     carry_t: u64,
+}
+
+impl Evt21Decoder {
+    /// Decoder for the `legacy` layout (IMX636/EVK4, `endianness=legacy`).
+    pub fn legacy() -> Self {
+        Self {
+            legacy: true,
+            ..Self::default()
+        }
+    }
+
+    /// Convert a raw word to the spec layout.
+    #[inline(always)]
+    fn normalize(&self, word: u64) -> u64 {
+        if self.legacy {
+            word.rotate_left(32)
+        } else {
+            word
+        }
+    }
 }
 
 impl RawFormatDecoder for Evt21Decoder {
@@ -84,25 +112,26 @@ impl RawFormatDecoder for Evt21Decoder {
         }
 
         // Fast-forward to first TIME_HIGH to establish time base
-        let (events, offset) = if !self.has_time_high {
-            let Some(pos) = raw_events
+        let all_words: &[u64] = bytemuck::cast_slice(raw_events);
+        let (words, offset) = if !self.has_time_high {
+            let Some(pos) = all_words
                 .iter()
-                .position(|e| e.event_type() == EVT_TIME_HIGH)
+                .position(|&w| (self.normalize(w) >> 60) as u8 == EVT_TIME_HIGH)
             else {
                 return raw_events.len();
             };
-            self.time_high = raw_events[pos].time_high() << 6;
+            self.time_high = ((self.normalize(all_words[pos]) >> 32) & 0x0FFF_FFFF) << 6;
             self.has_time_high = true;
-            (&raw_events[pos + 1..], pos + 1)
+            (&all_words[pos + 1..], pos + 1)
         } else {
-            (raw_events, 0)
+            (all_words, 0)
         };
 
         let mut time_high = self.time_high;
-        let words: &[u64] = bytemuck::cast_slice(events);
 
         // Main decoding loop - simple and sequential
-        for (i, &word) in words.iter().enumerate() {
+        for (i, &raw_word) in words.iter().enumerate() {
+            let word = self.normalize(raw_word);
             // Check budgets
             if decoded_count >= max_events {
                 self.time_high = time_high;
@@ -202,4 +231,37 @@ fn expand_mask(x_buf: &mut [u16; 32], base_x: u16, mut mask: u32) -> usize {
         pos += 1;
     }
     pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TIME_HIGH = 5 (time base 320 us), then POS event: t_low = 3, x = 64, y = 10, mask = 0b101.
+    const SPEC_WORDS: [u64; 2] = [0x8000_0005_0000_0000, 0x10C2_000A_0000_0005];
+    // Same words with the 32-bit halves swapped, as an IMX636 sends them.
+    const LEGACY_WORDS: [u64; 2] = [0x0000_0000_8000_0005, 0x0000_0005_10C2_000A];
+
+    fn decode(mut dec: Evt21Decoder, words: &[u64]) -> crate::EventBatch {
+        let mut out = crate::EventBatch::new();
+        dec.decode(bytemuck::cast_slice(words), &mut out, u64::MAX, usize::MAX);
+        out
+    }
+
+    fn assert_expected(out: &crate::EventBatch) {
+        assert_eq!(out.x, [64, 66]);
+        assert_eq!(out.y, [10, 10]);
+        assert_eq!(out.p, [1, 1]);
+        assert_eq!(out.t, [323, 323]);
+    }
+
+    #[test]
+    fn decodes_little_layout() {
+        assert_expected(&decode(Evt21Decoder::new(), &SPEC_WORDS));
+    }
+
+    #[test]
+    fn decodes_legacy_layout() {
+        assert_expected(&decode(Evt21Decoder::legacy(), &LEGACY_WORDS));
+    }
 }

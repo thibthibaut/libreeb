@@ -74,7 +74,8 @@ impl RecordingState {
         // Write event type
         let event_type_str = match header.event_type {
             libreeb::io::header::RawEventType::Evt2 => "EVT2",
-            libreeb::io::header::RawEventType::Evt21 => "EVT2.1",
+            libreeb::io::header::RawEventType::Evt21 => "EVT2.1\n% endianness little",
+            libreeb::io::header::RawEventType::Evt21Legacy => "EVT2.1\n% endianness legacy",
             libreeb::io::header::RawEventType::Evt3 => "EVT3",
             libreeb::io::header::RawEventType::Evt4 => "EVT4",
         };
@@ -88,7 +89,7 @@ impl RecordingState {
         self.buffer.extend_from_slice(geo_str.as_bytes());
 
         // Copy other header fields (excluding Date, evt, geometry to avoid duplicates)
-        let skip_keys = ["Date", "date", "evt", "geometry", "format"];
+        let skip_keys = ["Date", "date", "evt", "geometry", "format", "endianness"];
         for (k, v) in &header.header_dict {
             if !skip_keys.contains(&k.as_str()) {
                 let line = format!("% {} {}\n", k, v);
