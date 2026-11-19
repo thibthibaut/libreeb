@@ -708,6 +708,23 @@ impl WasmCameraReader {
         Ok(())
     }
 
+    /// Mask individual pixels in hardware (digital event mask, at most 64).
+    /// Unused slots are cleared, so an empty slice removes all masks.
+    pub async fn set_pixel_masks(&self, pixels: &[(u32, u32)]) -> Result<(), JsValue> {
+        const SLOTS: usize = 64;
+        const BASE: u32 = 0x9100;
+        if pixels.len() > SLOTS {
+            return Err(JsValue::from_str("more than 64 pixels to mask"));
+        }
+        for slot in 0..SLOTS {
+            let word = pixels
+                .get(slot)
+                .map_or(0, |&(x, y)| (x & 0x7FF) | ((y & 0x7FF) << 16) | (1 << 31));
+            tz_write_reg(&self.device, self.dev_id, BASE + 4 * slot as u32, word).await?;
+        }
+        Ok(())
+    }
+
     /// Disable the hardware ROI window (restores full-sensor output).
     pub async fn clear_roi(&self) -> Result<(), JsValue> {
         // Clear all roi_ctrl ROI bits (roi_td_en | roi_td_shadow_trigger |

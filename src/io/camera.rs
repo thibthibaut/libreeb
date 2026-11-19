@@ -62,6 +62,23 @@ static SENSOR_TABLE: &[(u32, SensorSpec)] = &[
 
 const SENSOR_ID_ADDR: u32 = 0x0000_0014;
 
+// ROI registers (OpenEB gen41_roi_command.cpp).
+const ROI_CTRL: u32 = 0x0004; // bits 1 roi_td_en, 5 shadow trigger, 6 ROI (not RONI), 10 px_td_rstn
+const ROI_CTRL_MASK: u32 = 0x0000_0462;
+const ROI_WIN_CTRL: u32 = 0x0034; // bit 0 roi_master_en, bit 1 roi_win_done
+const ROI_WIN_START: u32 = 0x0038; // bits 10:0 x, 25:16 y
+const ROI_WIN_END: u32 = 0x003C;
+
+// Digital event mask (OpenEB gen41 register map: ro/digital_mask_pixel_00..63).
+/// Number of pixels the sensor can mask in hardware.
+pub const PIXEL_MASK_SLOTS: usize = 64;
+const PIXEL_MASK_BASE: u32 = 0x9100;
+
+/// Mask register value: bits 10:0 x, 26:16 y, bit 31 valid. `None` clears the slot.
+pub(crate) fn pixel_mask_word(pixel: Option<&(u32, u32)>) -> u32 {
+    pixel.map_or(0, |&(x, y)| (x & 0x7FF) | ((y & 0x7FF) << 16) | (1 << 31))
+}
+
 // ── Camera device listing ─────────────────────────────────────────────────────
 
 /// Identifies one EVK4 found on the USB bus (by enumeration index).
@@ -417,6 +434,98 @@ impl CameraReader {
     /// buffers taken here never reach the decoder.
     pub fn read_raw(&mut self) -> Option<Vec<u8>> {
         self.raw_rx.as_ref()?.recv().ok()
+    }
+
+    /// Enable a hardware ROI window (inclusive bounds, clamped to the sensor).
+    ///
+    /// Same register sequence as `WasmCameraReader::set_roi`, derived from
+    /// OpenEB `gen41_roi_command.cpp` (`write_ROI_windows()` + `enable()`).
+    pub fn set_roi(&self, x_min: u32, y_min: u32, x_max: u32, y_max: u32) -> Result<()> {
+        let (w, h) = (self.spec.width - 1, self.spec.height - 1);
+        let (x_min, y_min, x_max, y_max) = (x_min.min(w), y_min.min(h), x_max.min(w), y_max.min(h));
+        if x_min > x_max || y_min > y_max {
+            bail!("empty ROI ({x_min},{y_min})-({x_max},{y_max})");
+        }
+        self.reg_write(ROI_WIN_START, x_min | (y_min << 16))?;
+        self.reg_write(ROI_WIN_END, x_max | (y_max << 16))?;
+        // Latch the window, then wait for roi_win_done.
+        self.reg_write_field(ROI_WIN_CTRL, 0x1, 0x1)?;
+        let mut latched = false;
+        for _ in 0..200 {
+            if self.reg_read(ROI_WIN_CTRL)? & 0x2 != 0 {
+                latched = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if !latched {
+            bail!("ROI window not latched (roi_win_done never set)");
+        }
+        self.reg_write_field(ROI_CTRL, ROI_CTRL_MASK, ROI_CTRL_MASK)?;
+        self.reg_write_field(ROI_WIN_CTRL, 0x0, 0x3)
+    }
+
+    /// Mask individual pixels in hardware (digital event mask, at most
+    /// [`PIXEL_MASK_SLOTS`] pixels). Unused slots are cleared, so an empty
+    /// slice removes all masks. Typical use: silence hot pixels.
+    pub fn set_pixel_masks(&self, pixels: &[(u32, u32)]) -> Result<()> {
+        if pixels.len() > PIXEL_MASK_SLOTS {
+            bail!(
+                "{} pixels to mask, sensor has {PIXEL_MASK_SLOTS} slots",
+                pixels.len()
+            );
+        }
+        for slot in 0..PIXEL_MASK_SLOTS {
+            self.reg_write(
+                PIXEL_MASK_BASE + 4 * slot as u32,
+                pixel_mask_word(pixels.get(slot)),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Disable the hardware ROI (full-sensor output).
+    pub fn clear_roi(&self) -> Result<()> {
+        self.reg_write_field(ROI_CTRL, 0x0, ROI_CTRL_MASK)?;
+        self.reg_write_field(ROI_WIN_CTRL, 0x0, 0x3)?;
+        self.reg_write(ROI_WIN_START, 0)?;
+        self.reg_write(
+            ROI_WIN_END,
+            (self.spec.width - 1) | ((self.spec.height - 1) << 16),
+        )
+    }
+
+    fn reg_read(&self, addr: u32) -> Result<u32> {
+        tz_read_reg(
+            &self.handle,
+            self.ep.ctrl_out,
+            self.ep.ctrl_in,
+            self.dev_id,
+            addr,
+        )
+    }
+
+    fn reg_write(&self, addr: u32, val: u32) -> Result<()> {
+        tz_write_reg(
+            &self.handle,
+            self.ep.ctrl_out,
+            self.ep.ctrl_in,
+            self.dev_id,
+            addr,
+            val,
+        )
+    }
+
+    fn reg_write_field(&self, addr: u32, data: u32, mask: u32) -> Result<()> {
+        tz_write_reg_field(
+            &self.handle,
+            self.ep.ctrl_out,
+            self.ep.ctrl_in,
+            self.dev_id,
+            addr,
+            data,
+            mask,
+        )
     }
 
     /// Gracefully stop streaming: reader thread → stream-off → ISSD stop →
@@ -838,4 +947,18 @@ fn find_treuzell_endpoints(config: &rusb::ConfigDescriptor) -> Option<Endpoints>
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pixel_mask_word;
+
+    #[test]
+    fn pixel_mask_word_layout() {
+        assert_eq!(
+            pixel_mask_word(Some(&(680, 330))),
+            0x8000_0000 | (330 << 16) | 680
+        );
+        assert_eq!(pixel_mask_word(None), 0);
+    }
 }
