@@ -30,7 +30,6 @@ const EXT_TRIGGER: u8 = 0xA;
 // Time handling constants
 const MAX_TIMESTAMP_BASE: u64 = ((1u64 << 12) - 1) << 12;
 const TIME_LOOP_DURATION_US: u64 = MAX_TIMESTAMP_BASE + (1 << 12);
-const LOOP_THRESHOLD: u64 = 10 << 12;
 
 pub struct Evt3Decoder {
     time: u64,
@@ -278,13 +277,44 @@ impl Evt3Decoder {
         let prev = self.time_base;
         let mut new_t = (event_time << 12) + self.time_high_loop_nb as u64 * TIME_LOOP_DURATION_US;
 
-        // Handle timestamp wrapping
-        if prev > new_t && prev - new_t >= MAX_TIMESTAMP_BASE - LOOP_THRESHOLD {
+        // Handle timestamp wrapping. Any backward jump of more than half the
+        // 24-bit range is a wrap: when USB data is dropped around the wrap, the
+        // last time_high seen before it can be well below MAX_TIMESTAMP_BASE.
+        if prev > new_t && prev - new_t >= TIME_LOOP_DURATION_US / 2 {
             new_t += TIME_LOOP_DURATION_US;
             self.time_high_loop_nb += 1;
         }
 
         self.time_base = new_t;
         self.time = new_t;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time_high(v: u16) -> u16 {
+        ((EVT_TIME_HIGH as u16) << 12) | v
+    }
+
+    #[test]
+    fn wrap_detected_when_time_highs_dropped_around_it() {
+        let mut dec = Evt3Decoder::new();
+        let mut out = crate::EventBatch::new();
+        // Last time_high before the drop is 0xF00 (~15.7 s), first after it 0x010:
+        // the backward jump is less than a full loop but still a wrap.
+        let words: Vec<u16> = vec![time_high(0xF00), time_high(0x010)];
+        dec.decode(bytemuck::cast_slice(&words), &mut out, u64::MAX, usize::MAX);
+        assert_eq!(dec.current_time(), TIME_LOOP_DURATION_US + (0x010 << 12));
+    }
+
+    #[test]
+    fn small_backward_jump_is_not_a_wrap() {
+        let mut dec = Evt3Decoder::new();
+        let mut out = crate::EventBatch::new();
+        let words: Vec<u16> = vec![time_high(0x800), time_high(0x7FF)];
+        dec.decode(bytemuck::cast_slice(&words), &mut out, u64::MAX, usize::MAX);
+        assert_eq!(dec.current_time(), 0x7FF << 12);
     }
 }
