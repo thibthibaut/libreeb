@@ -25,3 +25,6 @@ devenv.local.yaml
 # Split recordings
 data/evt3/*_part_*.raw
 data/evt3/*.tmp_index
+
+# Local recordings at repo root
+/*.raw
