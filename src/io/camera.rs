@@ -6,6 +6,10 @@
 //! sensor is started and EVT3 data flows on the third bulk endpoint.
 //! The struct implements `Iterator<Item = EventBatch>`.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, TrySendError};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::{biases::BIAS_TABLE, decoders::Evt3Decoder, io::reader::RawFormatDecoder, EventBatch};
@@ -30,6 +34,8 @@ const CTRL_TIMEOUT: Duration = Duration::from_millis(1_000);
 const CTRL_RX_TIMEOUT: Duration = Duration::from_millis(10_000);
 const DATA_TIMEOUT: Duration = Duration::from_millis(100);
 const BULK_BUF_SIZE: usize = 128 * 1024;
+/// Raw USB buffers queued between the reader thread and the consumer (~32 MiB).
+const RAW_QUEUE_DEPTH: usize = 256;
 
 // ── Sensor specification table ────────────────────────────────────────────────
 
@@ -294,16 +300,24 @@ struct Endpoints {
 /// Implements `Iterator<Item = EventBatch>`. Each call to `next()` blocks
 /// until a non-empty batch of decoded CD events arrives over USB.
 ///
+/// A dedicated thread services the bulk endpoint and queues raw buffers, so
+/// the device FIFO keeps draining while the consumer decodes or processes.
+/// If the consumer falls behind by more than the queue depth, whole buffers
+/// are dropped on the host side and counted in [`CameraReader::dropped_buffers`].
+///
 /// Drop (or call `stop()`) to gracefully shut down: the camera is returned
 /// to its idle state and the USB interface is released.
 pub struct CameraReader {
-    handle: DeviceHandle<GlobalContext>,
+    handle: Arc<DeviceHandle<GlobalContext>>,
     ep: Endpoints,
     dev_id: u32,
     spec: &'static SensorSpec,
     bias_defaults: Vec<u8>, // factory idac_ctl for each BIAS_TABLE entry
     decoder: Evt3Decoder,
-    buf: Vec<u8>,
+    raw_rx: Option<Receiver<Vec<u8>>>,
+    reader: Option<JoinHandle<()>>,
+    running: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
     stopped: bool,
 }
 
@@ -321,17 +335,21 @@ impl CameraReader {
         let (dev_id, spec) = find_sensor(&handle, &ep)?;
         eprintln!("camera: {} at Treuzell dev_id={}", spec.name, dev_id);
         let mut cam = CameraReader {
-            handle,
+            handle: Arc::new(handle),
             ep,
             dev_id,
             spec,
             bias_defaults: Vec::new(),
             decoder: Evt3Decoder::new(),
-            buf: vec![0u8; BULK_BUF_SIZE],
+            raw_rx: None,
+            reader: None,
+            running: Arc::new(AtomicBool::new(true)),
+            dropped: Arc::new(AtomicU64::new(0)),
             stopped: false,
         };
         cam.init()?;
         cam.load_bias_defaults();
+        cam.spawn_reader();
         Ok(cam)
     }
 
@@ -388,13 +406,31 @@ impl CameraReader {
         )
     }
 
-    /// Gracefully stop streaming: stream-off → ISSD stop → ISSD destroy →
-    /// release interface. Safe to call multiple times.
+    /// Number of raw USB buffers dropped because the consumer fell behind.
+    pub fn dropped_buffers(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Block until the next raw EVT3 buffer arrives, without decoding it.
+    ///
+    /// Use this to record `.raw` files. Do not mix with [`Iterator::next`]:
+    /// buffers taken here never reach the decoder.
+    pub fn read_raw(&mut self) -> Option<Vec<u8>> {
+        self.raw_rx.as_ref()?.recv().ok()
+    }
+
+    /// Gracefully stop streaming: reader thread → stream-off → ISSD stop →
+    /// ISSD destroy → release interface. Safe to call multiple times.
     pub fn stop(&mut self) {
         if self.stopped {
             return;
         }
         self.stopped = true;
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join(); // returns within DATA_TIMEOUT
+        }
+        self.raw_rx = None;
         if let Err(e) = stream_ctrl(&self.handle, &self.ep, self.dev_id, false) {
             eprintln!("camera: stream-off failed (non-fatal): {}", e);
         }
@@ -410,6 +446,41 @@ impl CameraReader {
     }
 
     // ── Private ──────────────────────────────────────────────────────────────
+
+    /// Start the thread that keeps a bulk read pending at all times.
+    fn spawn_reader(&mut self) {
+        let (tx, rx) = sync_channel::<Vec<u8>>(RAW_QUEUE_DEPTH);
+        let handle = Arc::clone(&self.handle);
+        let running = Arc::clone(&self.running);
+        let dropped = Arc::clone(&self.dropped);
+        let ep_in = self.ep.data_in;
+        // shortcut: one synchronous transfer at a time (rusb has no async API);
+        // the gap between transfers is only a channel send. Move to libusb async
+        // or nusb with several queued transfers if the device FIFO still overflows.
+        self.reader = Some(std::thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                let mut buf = vec![0u8; BULK_BUF_SIZE];
+                match handle.read_bulk(ep_in, &mut buf, DATA_TIMEOUT) {
+                    Ok(0) | Err(rusb::Error::Timeout) => continue,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        match tx.try_send(buf) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                dropped.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(TrySendError::Disconnected(_)) => return,
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("camera: bulk read error: {}", e);
+                        return;
+                    }
+                }
+            }
+        }));
+        self.raw_rx = Some(rx);
+    }
 
     /// Read and cache the factory-programmed idac_ctl for every BIAS_TABLE entry.
     /// Called once after `init()`.  Failures are non-fatal (defaults to 128).
@@ -479,27 +550,16 @@ impl Iterator for CameraReader {
             return None;
         }
         loop {
-            let n = match self
-                .handle
-                .read_bulk(self.ep.data_in, &mut self.buf, DATA_TIMEOUT)
-            {
-                Ok(0) => continue,
-                Ok(n) => n,
-                Err(rusb::Error::Timeout) => continue,
-                Err(e) => {
-                    eprintln!("camera: bulk read error: {}", e);
-                    return None;
-                }
-            };
+            let buf = self.read_raw()?;
 
             // Trim to a multiple of the EVT3 word size (2 bytes).
             let word_size = std::mem::size_of::<Evt3>();
-            let size = n - (n % word_size);
+            let size = buf.len() - (buf.len() % word_size);
             if size == 0 {
                 continue;
             }
 
-            let evts: &[Evt3] = bytemuck::cast_slice(&self.buf[..size]);
+            let evts: &[Evt3] = bytemuck::cast_slice(&buf[..size]);
 
             let mut batch = EventBatch::with_capacity(evts.len() / 4);
             self.decoder.decode(evts, &mut batch, u64::MAX, usize::MAX);
