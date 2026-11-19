@@ -8,7 +8,9 @@
 //! USB device-picker dialog, runs the full ISSD init sequence, and then
 //! provides [`WasmCameraReader::read_batch`] for streaming decoded event batches.
 
-use js_sys::{Array, Object, Reflect, Uint8Array};
+use std::collections::VecDeque;
+
+use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{UsbDevice, UsbDeviceRequestOptions};
@@ -34,6 +36,8 @@ use crate::{
 const EVK4_VID: u16 = 0x04b4;
 const EVK4_PID: u16 = 0x00f5;
 const BULK_BUF_SIZE: u32 = 128 * 1024;
+/// Bulk IN transfers kept queued so the device FIFO drains while wasm decodes.
+const TRANSFERS_IN_FLIGHT: usize = 4;
 
 // Treuzell protocol constants
 const TZ_WRITE_FLAG: u32 = 0x4000_0000;
@@ -270,8 +274,10 @@ fn decode_tz(bytes: &[u8]) -> Vec<u32> {
         return vec![];
     }
     bytes[8..]
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect()
 }
 
@@ -440,6 +446,7 @@ pub struct WasmCameraReader {
     pub bias_defaults: Vec<u8>,
     pub event_type: RawEventType,
     decoder: CameraDecoder,
+    in_flight: VecDeque<Promise>,
 }
 
 enum CameraDecoder {
@@ -553,6 +560,7 @@ impl WasmCameraReader {
             bias_defaults,
             event_type,
             decoder: CameraDecoder::new(event_type)?,
+            in_flight: VecDeque::with_capacity(TRANSFERS_IN_FLIGHT),
         })
     }
 
@@ -578,13 +586,21 @@ impl WasmCameraReader {
     /// Important: Only returns bytes that were actually decoded (aligned to word boundaries).
     /// This ensures recordings are always properly aligned and can be played back.
     pub async fn read_batch_with_bytes(&mut self) -> Option<(EventBatch, Vec<u8>)> {
-        let result = JsFuture::from(self.device.transfer_in(EP_DATA, BULK_BUF_SIZE))
-            .await
-            .ok()?;
+        // WebUSB completes queued transfers in submission order.
+        while self.in_flight.len() < TRANSFERS_IN_FLIGHT {
+            self.in_flight
+                .push_back(self.device.transfer_in(EP_DATA, BULK_BUF_SIZE));
+        }
+        let pending = self.in_flight.pop_front()?;
+        let result = JsFuture::from(pending).await.ok()?;
         let transfer: web_sys::UsbInTransferResult = result.dyn_into().ok()?;
         let data = transfer.data()?;
-        let len = data.byte_length();
-        let bytes: Vec<u8> = (0..len).map(|i| data.get_uint8(i)).collect();
+        let mut bytes = Uint8Array::new_with_byte_offset_and_length(
+            &data.buffer(),
+            data.byte_offset() as u32,
+            data.byte_length() as u32,
+        )
+        .to_vec();
         if bytes.is_empty() {
             return None;
         }
@@ -604,7 +620,8 @@ impl WasmCameraReader {
         } else {
             // Only return the bytes that were actually decoded (aligned)
             // This prevents misalignment issues in recordings
-            Some((batch, bytes[..aligned_byte_count].to_vec()))
+            bytes.truncate(aligned_byte_count);
+            Some((batch, bytes))
         }
     }
 

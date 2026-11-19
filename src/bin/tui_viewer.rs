@@ -204,7 +204,7 @@ impl AppState {
     }
 
     fn adjust_slice_duration(&mut self, delta: i64) {
-        let new_duration = (self.slice_duration as i64 + delta).max(1).min(200_000) as u64;
+        let new_duration = (self.slice_duration as i64 + delta).clamp(1, 200_000) as u64;
         self.slice_duration = new_duration;
         // When slice duration changes, we let the next frame use the new duration naturally
     }
@@ -342,26 +342,22 @@ fn render_canvas(f: &mut Frame, area: Rect, state: &AppState) {
 
             // Draw all ON events in a single batched call
             match filter {
-                EventFilter::Both | EventFilter::OnOnly => {
-                    if !on_points.is_empty() {
-                        ctx.draw(&Points {
-                            coords: &on_points,
-                            color: Color::LightRed,
-                        });
-                    }
+                EventFilter::Both | EventFilter::OnOnly if !on_points.is_empty() => {
+                    ctx.draw(&Points {
+                        coords: &on_points,
+                        color: Color::LightRed,
+                    });
                 }
                 _ => {}
             }
 
             // Draw all OFF events in a single batched call
             match filter {
-                EventFilter::Both | EventFilter::OffOnly => {
-                    if !off_points.is_empty() {
-                        ctx.draw(&Points {
-                            coords: &off_points,
-                            color: Color::LightCyan,
-                        });
-                    }
+                EventFilter::Both | EventFilter::OffOnly if !off_points.is_empty() => {
+                    ctx.draw(&Points {
+                        coords: &off_points,
+                        color: Color::LightCyan,
+                    });
                 }
                 _ => {}
             }

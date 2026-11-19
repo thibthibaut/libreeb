@@ -101,7 +101,7 @@ impl EventViewerApp {
                     return AppState::Selection;
                 }
                 match init.lock().ok().and_then(|mut g| g.take()) {
-                    Some(Ok(vs)) => AppState::Viewing(vs),
+                    Some(Ok(vs)) => AppState::Viewing(Box::new(vs)),
                     Some(Err(e)) => AppState::Error(e),
                     None => AppState::Opening { label, init },
                 }
