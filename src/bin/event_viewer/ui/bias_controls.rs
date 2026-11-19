@@ -67,7 +67,7 @@ pub fn format_bias_file(offsets: &[i32]) -> String {
 pub fn show_bias_controls(
     ui: &mut egui::Ui,
     bias_defaults: &[u8],
-    bias_offsets: &mut Vec<i32>,
+    bias_offsets: &mut [i32],
 ) -> BiasControlResult {
     let mut action = BiasAction::None;
     let mut changed = false;

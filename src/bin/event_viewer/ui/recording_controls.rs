@@ -4,18 +4,10 @@ use crate::recording::RecordingState;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
+#[derive(Default)]
 pub struct RecordingActions {
     pub start: bool,
     pub stop: bool,
-}
-
-impl Default for RecordingActions {
-    fn default() -> Self {
-        RecordingActions {
-            start: false,
-            stop: false,
-        }
-    }
 }
 
 /// Show recording controls (filename input + start/stop button).
