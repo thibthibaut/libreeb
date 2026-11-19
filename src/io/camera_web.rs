@@ -725,6 +725,35 @@ impl WasmCameraReader {
         Ok(())
     }
 
+    /// Hardware anti-flicker band-stop (`Some((low_hz, high_hz))`, 50–520 Hz)
+    /// or disabled (`None`). Same sequence as the native reader.
+    pub async fn set_antiflicker(&self, band: Option<(u32, u32)>) -> Result<(), JsValue> {
+        let d = &self.device;
+        tz_write_reg(d, self.dev_id, 0xC000, 0b101).await?;
+        let Some((low_hz, high_hz)) = band else {
+            return Ok(());
+        };
+        if low_hz < 50 || high_hz > 520 || low_hz > high_hz {
+            return Err(JsValue::from_str("anti-flicker band outside 50-520 Hz"));
+        }
+        let mut ready = false;
+        for _ in 0..3 {
+            if tz_read_reg(d, self.dev_id, 0xC0C4).await? & 0x4 != 0 {
+                ready = true;
+                break;
+            }
+        }
+        if !ready {
+            return Err(JsValue::from_str("anti-flicker block not initialised"));
+        }
+        let period = |hz: u32| (1_000_000 / hz) >> 7;
+        let fp = (period(high_hz) & 0xFF) | ((period(low_hz) & 0xFF) << 8) | (0x8 << 16);
+        tz_write_reg_field(d, self.dev_id, 0xC0C0, 1630, 0xFFF).await?;
+        tz_write_reg_field(d, self.dev_id, 0xC008, fp, 0xF_FFFF).await?;
+        tz_write_reg_field(d, self.dev_id, 0xC004, 4 | (6 << 3), 0x7F).await?;
+        tz_write_reg(d, self.dev_id, 0xC000, 0b001).await
+    }
+
     /// Disable the hardware ROI window (restores full-sensor output).
     pub async fn clear_roi(&self) -> Result<(), JsValue> {
         // Clear all roi_ctrl ROI bits (roi_td_en | roi_td_shadow_trigger |
