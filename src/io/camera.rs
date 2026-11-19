@@ -74,6 +74,25 @@ const ROI_WIN_END: u32 = 0x003C;
 pub const PIXEL_MASK_SLOTS: usize = 64;
 const PIXEL_MASK_BASE: u32 = 0x9100;
 
+// Anti-flicker (AFK) block, OpenEB antiflicker_filter.cpp + imx636 register map.
+const AFK_PIPELINE_CONTROL: u32 = 0xC000; // 0b001 enabled, 0b101 bypassed
+const AFK_PARAM: u32 = 0xC004; // bits 2:0 counter_low, 5:3 counter_high, 6 invert
+const AFK_FILTER_PERIOD: u32 = 0xC008; // bits 7:0 min period, 15:8 max period (128 µs units), 19:16 inverted duty
+const AFK_INVALIDATION: u32 = 0xC0C0; // bits 11:0 dt_fifo_wait_time
+const AFK_INITIALIZATION: u32 = 0xC0C4; // bit 2 afk_flag_init_done
+const AFK_SHADOW_CTRL: u32 = 0xC0D4; // bit 0 timer_en: latch the counters periodically
+const AFK_TOTAL_EVT_COUNT: u32 = 0xC0E0;
+const AFK_FLICKER_EVT_COUNT: u32 = 0xC0E4;
+/// Flicker band the AFK supports, Hz.
+pub const ANTIFLICKER_RANGE_HZ: (u32, u32) = (50, 520);
+
+/// AFK filter_period value for a band-stop between `low_hz` and `high_hz`
+/// (periods in 128 µs units, OpenEB default inverted duty cycle 8).
+pub(crate) fn afk_filter_period(low_hz: u32, high_hz: u32) -> u32 {
+    let period = |hz: u32| (1_000_000 / hz) >> 7;
+    (period(high_hz) & 0xFF) | ((period(low_hz) & 0xFF) << 8) | (0x8 << 16)
+}
+
 /// Mask register value: bits 10:0 x, 26:16 y, bit 31 valid. `None` clears the slot.
 pub(crate) fn pixel_mask_word(pixel: Option<&(u32, u32)>) -> u32 {
     pixel.map_or(0, |&(x, y)| (x & 0x7FF) | ((y & 0x7FF) << 16) | (1 << 31))
@@ -482,6 +501,45 @@ impl CameraReader {
             )?;
         }
         Ok(())
+    }
+
+    /// Enable the hardware anti-flicker filter in band-stop mode between
+    /// `low_hz` and `high_hz` (within [`ANTIFLICKER_RANGE_HZ`]), or disable it
+    /// with `None`. Same sequence as OpenEB `AntiFlickerFilter::enable`.
+    pub fn set_antiflicker(&self, band: Option<(u32, u32)>) -> Result<()> {
+        self.reg_write(AFK_PIPELINE_CONTROL, 0b101)?;
+        let Some((low_hz, high_hz)) = band else {
+            return Ok(());
+        };
+        let (min, max) = ANTIFLICKER_RANGE_HZ;
+        if low_hz < min || high_hz > max || low_hz > high_hz {
+            bail!("anti-flicker band {low_hz}-{high_hz} Hz outside {min}-{max} Hz");
+        }
+        if (0..3).all(|_| {
+            self.reg_read(AFK_INITIALIZATION)
+                .map_or(true, |v| v & 0x4 == 0)
+        }) {
+            bail!("anti-flicker block not initialised (afk_flag_init_done never set)");
+        }
+        self.reg_write_field(AFK_INVALIDATION, 1630, 0xFFF)?;
+        self.reg_write_field(
+            AFK_FILTER_PERIOD,
+            afk_filter_period(low_hz, high_hz),
+            0xF_FFFF,
+        )?;
+        // band-stop (invert = 0), counter_high 6, counter_low 4 (OpenEB defaults)
+        self.reg_write_field(AFK_PARAM, 4 | (6 << 3), 0x7F)?;
+        self.reg_write_field(AFK_SHADOW_CTRL, 1, 1)?;
+        self.reg_write(AFK_PIPELINE_CONTROL, 0b001)
+    }
+
+    /// AFK counters latched by the shadow timer: (events seen, events dropped
+    /// as flicker) over the last latch period.
+    pub fn antiflicker_counts(&self) -> Result<(u32, u32)> {
+        Ok((
+            self.reg_read(AFK_TOTAL_EVT_COUNT)?,
+            self.reg_read(AFK_FLICKER_EVT_COUNT)?,
+        ))
     }
 
     /// Disable the hardware ROI (full-sensor output).
@@ -952,6 +1010,13 @@ fn find_treuzell_endpoints(config: &rusb::ConfigDescriptor) -> Option<Endpoints>
 #[cfg(test)]
 mod tests {
     use super::pixel_mask_word;
+
+    #[test]
+    fn afk_filter_period_matches_openeb_defaults() {
+        // OpenEB register defaults: min 0xF (520 Hz), max 0x9C (50 Hz), duty 8.
+        assert_eq!(super::afk_filter_period(50, 520), 0x8_9C0F);
+        assert_eq!(super::afk_filter_period(90, 110) & 0xFFFF, (86 << 8) | 71); // 1e6/90>>7, 1e6/110>>7
+    }
 
     #[test]
     fn pixel_mask_word_layout() {
