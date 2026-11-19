@@ -35,7 +35,7 @@ pub enum AppState {
     /// Async init in progress (file parsing or USB camera open).
     Opening { label: String, init: InitSlot },
     /// Source open and streaming.
-    Viewing(ViewerState),
+    Viewing(Box<ViewerState>),
     /// Unrecoverable error; shows message + Back button.
     Error(String),
 }

@@ -28,11 +28,11 @@ impl RecordingState {
         {
             let date = js_sys::Date::new_0();
             let year = date.get_full_year() as i32;
-            let month = (date.get_month() as u32) + 1;
-            let day = date.get_date() as u32;
-            let hour = date.get_hours() as u32;
-            let minute = date.get_minutes() as u32;
-            let second = date.get_seconds() as u32;
+            let month = date.get_month() + 1;
+            let day = date.get_date();
+            let hour = date.get_hours();
+            let minute = date.get_minutes();
+            let second = date.get_seconds();
             format!(
                 "recording-{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.raw",
                 year, month, day, hour, minute, second
@@ -99,13 +99,6 @@ impl RecordingState {
         // No blank line needed - .raw format has event data immediately after last header field
     }
 
-    /// Append raw event bytes to the buffer.
-    pub fn append_bytes(&mut self, bytes: &[u8]) {
-        if self.is_recording {
-            self.buffer.extend_from_slice(bytes);
-        }
-    }
-
     /// Stop recording and return the buffer.
     pub fn stop(&mut self) -> Vec<u8> {
         self.is_recording = false;
@@ -119,11 +112,6 @@ impl RecordingState {
         self.event_count = 0;
         self.start_timestamp = None;
         self.filename = Self::default_filename();
-    }
-
-    /// Get buffer size in bytes.
-    pub fn buffer_size(&self) -> usize {
-        self.buffer.len()
     }
 
     /// Get buffer size in MB.

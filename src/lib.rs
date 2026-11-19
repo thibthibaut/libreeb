@@ -514,7 +514,7 @@ mod tests {
 
     fn compute_hash(decoder: &mut EventDecoder) -> u64 {
         let mut hasher = Xxh64::new(0);
-        while let Some(batch) = decoder.next() {
+        for batch in decoder.by_ref() {
             for evt in &batch {
                 hasher.write_u16(evt.x);
                 hasher.write_u16(evt.y);

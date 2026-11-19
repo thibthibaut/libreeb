@@ -112,9 +112,6 @@ impl<T: Timestamped> TimeWindow<T> {
     pub fn len(&self) -> usize {
         self.items.len()
     }
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
     pub fn clear(&mut self) {
         self.items.clear();
     }

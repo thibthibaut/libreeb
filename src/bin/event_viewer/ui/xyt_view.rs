@@ -179,6 +179,7 @@ fn project(
     (cx + fx / (fz + d) * scale, cy - fy / (fz + d) * scale)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_axes(
     painter: &egui::Painter,
     cx: f32,
