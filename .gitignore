@@ -5,6 +5,9 @@
 .env
 .cache*
 openeb/build
+# Local checkouts, not submodules: cargo fetches submodules of git dependencies
+/openeb/openeb
+/metavision
 perf.data*
 
 # Devenv
