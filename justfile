@@ -8,7 +8,13 @@ build:
 test:
     cargo nextest r
 
-# Generates references hashes
+# Fetch the patched OpenEB used to generate reference hashes (kept out of the repo:
+# as a submodule, every crate depending on libreeb via git would download it)
+fetch_openeb:
+    git clone --branch libreeb-patches https://github.com/thibthibaut/openeb.git openeb/openeb
+    git -C openeb/openeb checkout eb6d22f9c5d9c1caba3ec770262d8a096b3260cc
+
+# Generates references hashes (needs `just fetch_openeb` and an OpenEB build in openeb/build)
 generate_references:
     @openeb/build/openeb/bin/TestOpenEB "{{justfile_dir()}}/data/gen4_evt3_hand.raw" > references/gen4_evt3_hand.raw.no_time_shift.xxh
     @openeb/build/openeb/bin/TestOpenEB "{{justfile_dir()}}/data/claque_doigt_evt21.raw" >  references/claque_doigt_evt21.raw.no_time_shift.xxh
