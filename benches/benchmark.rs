@@ -2,7 +2,9 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use libreeb::RawFileReader;
+use std::io::BufReader;
+
+use libreeb::{io::header::parse_header, make_decoder_generic, EventBuf, RawFileReader};
 
 // ── Helper: load a file into a shared, cheaply-cloneable buffer ──────────────
 
@@ -39,6 +41,34 @@ fn bench_decode_only(c: &mut Criterion) {
     group.finish();
 }
 
+// ── decode_event_buf: same as decode_only, decoding into the packed EventBuf ──
+
+fn bench_decode_event_buf(c: &mut Criterion) {
+    let files = [
+        ("gen4_evt3_hand", "data/evt3/gen4_evt3_hand.raw"),
+        ("driving_sample", "data/evt3/driving_sample.raw"),
+        ("claque_doigt_evt21", "data/evt21/claque_doigt_evt21.raw"),
+    ];
+
+    let mut group = c.benchmark_group("decode_event_buf");
+
+    for (name, path) in &files {
+        let bytes: Arc<[u8]> = load_file(path);
+        group.throughput(Throughput::Bytes(bytes.len() as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(name), &bytes, |b, data| {
+            b.iter(|| {
+                let mut reader = BufReader::with_capacity(64 * 1024, Cursor::new(Arc::clone(data)));
+                let header = parse_header(&mut reader).expect("Failed to parse header");
+                make_decoder_generic::<_, EventBuf>(reader, header.event_type)
+                    .expect("Unsupported format")
+                    .count()
+            })
+        });
+    }
+
+    group.finish();
+}
+
 // ── full_pipeline: open + read + decode from disk (I/O included) ─────────────
 
 fn bench_full_pipeline(c: &mut Criterion) {
@@ -66,5 +96,10 @@ fn bench_full_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_decode_only, bench_full_pipeline);
+criterion_group!(
+    benches,
+    bench_decode_only,
+    bench_decode_event_buf,
+    bench_full_pipeline
+);
 criterion_main!(benches);

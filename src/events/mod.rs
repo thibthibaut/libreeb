@@ -3,6 +3,7 @@
 //! This module provides different ways to store decoded events:
 //! - [`EventSoA`]: Structure-of-Arrays layout (cache-friendly, default)
 //! - [`EventAoS`]: Array-of-Structures layout (simpler, more intuitive)
+//! - [`EventBuf`]: packed `u32` events + run-length timestamps (smallest)
 //! - [`EventCD`]: Individual Change Detection event
 //! - [`Trigger`]: External trigger event
 //!
@@ -10,10 +11,12 @@
 //! that can be queried, iterated, and manipulated.
 
 mod aos;
+mod buf;
 mod soa;
 mod types;
 
 pub use aos::EventAoS;
+pub use buf::{EventBuf, EventId, TimeMark};
 pub use soa::{EventBatch, EventSoA};
 pub use types::{EventCD, Trigger};
 
@@ -33,6 +36,7 @@ use crate::DecodeInto;
 /// Types implementing this trait:
 /// - [`EventSoA`]: Structure-of-Arrays layout
 /// - [`EventAoS`]: Array-of-Structures layout
+/// - [`EventBuf`]: packed events + run-length timestamps
 pub trait EventCollection: DecodeInto {
     /// Create a new empty collection.
     fn new() -> Self;
@@ -129,6 +133,36 @@ impl EventCollection for EventAoS {
 
     fn iter_cd(&self) -> impl Iterator<Item = EventCD> + '_ {
         self.events.iter().copied()
+    }
+
+    fn iter_triggers(&self) -> impl Iterator<Item = Trigger> + '_ {
+        self.triggers.iter().copied()
+    }
+}
+
+impl EventCollection for EventBuf {
+    fn new() -> Self {
+        EventBuf::new()
+    }
+
+    fn with_capacity(cap: usize) -> Self {
+        EventBuf::with_capacity(cap)
+    }
+
+    fn num_events(&self) -> usize {
+        EventBuf::len(self)
+    }
+
+    fn append(&mut self, other: &mut Self) {
+        EventBuf::append(self, other);
+    }
+
+    fn split_off(&mut self, at: usize) -> Self {
+        EventBuf::split_off(self, at)
+    }
+
+    fn iter_cd(&self) -> impl Iterator<Item = EventCD> + '_ {
+        EventBuf::iter_cd(self)
     }
 
     fn iter_triggers(&self) -> impl Iterator<Item = Trigger> + '_ {
