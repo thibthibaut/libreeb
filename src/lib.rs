@@ -20,7 +20,9 @@ pub mod io;
 pub mod processing;
 
 // Re-export event types
-pub use events::{EventAoS, EventBatch, EventCD, EventCollection, EventSoA, Trigger};
+pub use events::{
+    EventAoS, EventBatch, EventBuf, EventCD, EventCollection, EventId, EventSoA, TimeMark, Trigger,
+};
 
 // Re-export decoders
 pub use decoders::{Evt2, Evt21, Evt3};
@@ -553,6 +555,49 @@ mod tests {
                 .expect("Failed to parse reference hash");
             assert_eq!(hash, reference, "Hash mismatch for {}", raw_path);
         }
+    }
+
+    /// `EventBuf` must decode bit-identically to `EventBatch`, with and
+    /// without time slicing (which exercises the decoder's `end_time` budget).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[rstest]
+    #[case::evt3(
+        "data/gen4_evt3_hand.raw",
+        "references/gen4_evt3_hand.raw.no_time_shift.xxh"
+    )]
+    #[case::evt21(
+        "data/claque_doigt_evt21.raw",
+        "references/claque_doigt_evt21.raw.no_time_shift.xxh"
+    )]
+    #[case::evt2(
+        "data/blinking_leds.raw",
+        "references/blinking_leds.raw.no_time_shift.xxh"
+    )]
+    fn test_decoder_event_buf(
+        #[case] raw_path: &str,
+        #[case] ref_path: &str,
+        #[values(SliceBy::Bytes, SliceBy::Time(10_000))] slice_by: SliceBy,
+    ) {
+        let mut reader = BufReader::new(File::open(raw_path).expect("Failed to open input file"));
+        let header = io::header::parse_header(&mut reader).unwrap();
+        let mut decoder = make_decoder_generic::<_, EventBuf>(reader, header.event_type).unwrap();
+        decoder.set_slice_by(slice_by);
+
+        let mut hasher = Xxh64::new(0);
+        for batch in decoder.by_ref() {
+            for evt in batch.iter_cd() {
+                hasher.write_u16(evt.x);
+                hasher.write_u16(evt.y);
+                hasher.write_u8(evt.p);
+                hasher.write_u64(evt.t);
+            }
+        }
+        let reference: u64 = fs::read_to_string(ref_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(hasher.finish(), reference, "Hash mismatch for {raw_path}");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
